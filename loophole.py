@@ -16,6 +16,7 @@ Usage:
                                     [--config .loophole.json]
                                     [--baseline base.json]
                                     [--write-baseline base.json]
+                                    [--cache cache.json]
 
 Exit code is 1 when any critical/high finding exists (CI-friendly), else 0.
 
@@ -32,6 +33,7 @@ Stdlib only. No dependencies.
 import argparse
 import difflib
 import fnmatch
+import hashlib
 import html
 import json
 import math
@@ -2979,17 +2981,130 @@ def iter_source_files(root, excludes, ignore_patterns=None, stats=None):
             yield p
 
 
-def scan_path(root, excludes, config=None, ignore_patterns=None):
+def _finding_from_dict(d):
+    """Rebuild a Finding from its to_dict() form, or None if malformed."""
+    if not isinstance(d, dict):
+        return None
+    try:
+        return Finding(d["rule_id"], d["severity"], d["title"], d["path"],
+                       d["line"], d["snippet"], d["why"], d["fix"],
+                       d.get("taint_flow"))
+    except (KeyError, TypeError):
+        return None
+
+
+def _file_cache_key(path):
+    """Fingerprint a file for the cache: path is the dict key; the value
+    is size + mtime + SHA-256 of the contents. Any content change — even
+    one that keeps size and mtime — changes the hash, so a stale entry
+    can never be served. Returns None when the file cannot be read."""
+    try:
+        st = os.stat(path)
+        with open(path, "rb") as fh:
+            digest = hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        return None
+    return {"size": st.st_size, "mtime_ns": st.st_mtime_ns,
+            "sha256": digest}
+
+
+def _config_fingerprint(config):
+    """Hash of the scan config, so a changed config (disabled rules,
+    severity overrides) invalidates the whole cache."""
+    blob = json.dumps(config or {}, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def load_cache(path, config_hash):
+    """Load a cache file. Returns {file_path: entry} or {} on any doubt:
+    missing/unreadable/corrupt file, a version mismatch (a Loophole
+    upgrade invalidates old entries automatically) or a config change."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    if data.get("tool") != "loophole" or data.get("version") != VERSION:
+        return {}
+    if data.get("config") != config_hash:
+        return {}
+    entries = data.get("entries")
+    return entries if isinstance(entries, dict) else {}
+
+
+def save_cache(path, entries, config_hash):
+    """Write the cache atomically (temp file + rename in the same
+    directory). A cache that cannot be written is a warning, never a
+    failed scan."""
+    data = {"tool": "loophole", "version": VERSION,
+            "config": config_hash, "entries": entries}
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+        os.replace(tmp, path)
+    except OSError as exc:
+        print(f"loophole: cannot write cache {path}: {exc}",
+              file=sys.stderr)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def scan_path(root, excludes, config=None, ignore_patterns=None,
+              cache_path=None, stats=None):
     """Scan root; returns (findings, ignored_count). --exclude and
-    config 'exclude' combine with .loopholeignore patterns."""
+    config 'exclude' combine with .loopholeignore patterns.
+
+    With cache_path, repeat scans reuse stored findings for files whose
+    fingerprint (size + mtime + content hash) is unchanged; anything
+    else is rescanned. Cached findings are the raw per-file results,
+    so baseline and severity filtering — applied by the caller, after
+    this returns — behave exactly as for fresh findings. stats, when
+    given, gains stats["cached"], the number of files served from the
+    cache. Without --cache, behaviour is unchanged.
+    """
     findings = []
     excludes = list(excludes or [])
     if config:
         excludes += config.get("exclude", [])
-    stats = {"ignored": 0}
+    if stats is None:
+        stats = {"ignored": 0}
+    stats.setdefault("ignored", 0)
+    cache = {}
+    config_hash = None
+    cache_abs = os.path.abspath(cache_path) if cache_path else None
+    if cache_path:
+        config_hash = _config_fingerprint(config)
+        cache = load_cache(cache_path, config_hash)
+    kept = {}  # entries for files seen on this run only (prunes deletions)
+    cached = 0
     for path in sorted(iter_source_files(root, excludes, ignore_patterns,
                                          stats)):
-        findings.extend(scan_file(path, config))
+        if cache_abs and os.path.abspath(path) == cache_abs:
+            continue  # never scan the cache file itself
+        key = _file_cache_key(path) if cache_path else None
+        entry = cache.get(path) if key is not None else None
+        if (isinstance(entry, dict) and entry.get("key") == key
+                and isinstance(entry.get("findings"), list)):
+            restored = [_finding_from_dict(d)
+                        for d in entry["findings"]]
+            if all(f is not None for f in restored):
+                findings.extend(restored)
+                kept[path] = entry
+                cached += 1
+                continue
+        fresh = scan_file(path, config)
+        findings.extend(fresh)
+        if cache_path and key is not None:
+            kept[path] = {"key": key,
+                          "findings": [f.to_dict() for f in fresh]}
+    if cache_path:
+        save_cache(cache_path, kept, config_hash)
+    stats["cached"] = cached
     findings.sort(key=lambda f: (SEV_ORDER[f.severity], f.path, f.line))
     return findings, stats["ignored"]
 
@@ -3031,7 +3146,7 @@ def print_report(findings, color, min_sev="medium"):
 # Output: JSON / SARIF
 # ---------------------------------------------------------------------------
 
-def write_json(findings, out_path, ignored=0):
+def write_json(findings, out_path, ignored=0, cached=0):
     data = {
         "tool": "loophole",
         "version": VERSION,
@@ -3042,6 +3157,7 @@ def write_json(findings, out_path, ignored=0):
         },
     }
     data["summary"]["ignored"] = ignored
+    data["summary"]["cached"] = cached
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
     return out_path
@@ -3296,6 +3412,9 @@ def build_parser():
                         "file, exit 0")
     s.add_argument("--html", metavar="FILE", dest="html_out",
                    help="also write a self-contained HTML report")
+    s.add_argument("--cache", metavar="FILE",
+                   help="opt-in incremental cache file: repeat scans "
+                        "reuse findings for unchanged files (see README)")
     s.add_argument("--rules", action="store_true",
                    help="list all rule IDs and exit")
     return p
@@ -3316,8 +3435,11 @@ def main(argv=None):
     excludes = [e.strip() for e in args.exclude.split(",") if e.strip()]
     config = load_config(args.config, args.path)
     ignore_patterns = load_ignore_patterns(args.path)
+    stats = {}
     findings, ignored = scan_path(args.path, excludes, config,
-                                  ignore_patterns)
+                                  ignore_patterns,
+                                  cache_path=args.cache, stats=stats)
+    cached = stats.get("cached", 0)
 
     if args.write_baseline:
         write_baseline(findings, args.write_baseline)
@@ -3337,9 +3459,12 @@ def main(argv=None):
     print_report(findings, color, args.severity)
     if ignored:
         print(color.dim(f"{ignored} file(s) skipped by .loopholeignore"))
+    if args.cache:
+        print(color.dim(f"{cached} file(s) served from cache "
+                        f"({args.cache})"))
 
     if args.json_out:
-        write_json(findings, args.json_out, ignored)
+        write_json(findings, args.json_out, ignored, cached=cached)
         print(f"JSON report: {args.json_out}")
     if args.sarif_out:
         write_sarif(findings, args.sarif_out)

@@ -35,6 +35,21 @@ def rule_ids(findings):
     return {f["rule_id"] for f in findings}
 
 
+def scan_json(path, *extra):
+    """Run the scanner, return (exit_code, full parsed JSON report)."""
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+        out = tmp.name
+    try:
+        cmd = [sys.executable, SCANNER, "scan", path,
+               "--json", out, "--no-color"] + list(extra)
+        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT)
+        with open(out) as fh:
+            data = json.load(fh)
+        return proc.returncode, data
+    finally:
+        os.unlink(out)
+
+
 # rule -> fixtures that must trigger it (subset assertion: each listed rule
 # must appear at least once in the fixture's findings)
 EXPECTED = {
@@ -373,6 +388,105 @@ class TestFixtures(unittest.TestCase):
                 "HTML report must not reference external assets")
         finally:
             os.unlink(out)
+
+
+class TestCache(unittest.TestCase):
+    """--cache: cold cache, warm cache, invalidation on file change,
+    stale-version fallback, and baseline filtering after retrieval."""
+    VULN = 'API_KEY = "sk-live-abcdef1234567890"\n'
+
+    def _tree(self, d):
+        with open(os.path.join(d, "vuln.py"), "w") as fh:
+            fh.write(self.VULN)
+        with open(os.path.join(d, "clean.py"), "w") as fh:
+            fh.write("def greet(name):\n    return 'hello ' + name\n")
+
+    def test_cache_cold_then_warm(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._tree(d)
+            cache = os.path.join(d, "cache.json")
+            code1, data1 = scan_json(d, "--cache", cache)
+            self.assertEqual(data1["summary"]["cached"], 0,
+                             "cold cache should serve nothing")
+            self.assertTrue(os.path.isfile(cache),
+                            "first --cache run should write the cache")
+            sys.path.insert(0, ROOT)
+            import loophole
+            with open(cache) as fh:
+                stored = json.load(fh)
+            self.assertEqual(stored["version"], loophole.VERSION,
+                             "cache must record the ruleset version")
+            code2, data2 = scan_json(d, "--cache", cache)
+            self.assertEqual(data2["summary"]["cached"], 2,
+                             "warm cache should serve both files")
+            self.assertEqual(data1["findings"], data2["findings"],
+                             "cached run must produce identical findings")
+            self.assertEqual(code1, code2)
+
+    def test_cache_invalidation_on_change(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._tree(d)
+            cache = os.path.join(d, "cache.json")
+            scan_json(d, "--cache", cache)
+            _, warm = scan_json(d, "--cache", cache)
+            self.assertEqual(warm["summary"]["cached"], 2)
+            # edit only clean.py: it becomes vulnerable
+            with open(os.path.join(d, "clean.py"), "w") as fh:
+                fh.write(self.VULN)
+            _, data = scan_json(d, "--cache", cache)
+            self.assertEqual(
+                data["summary"]["cached"], 1,
+                "only the unchanged file should be served from cache")
+            self.assertTrue(
+                any(f["path"].endswith("clean.py")
+                    for f in data["findings"]),
+                "edited file must be rescanned and its finding shown")
+            _, data2 = scan_json(d, "--cache", cache)
+            self.assertEqual(data2["summary"]["cached"], 2,
+                             "cache should be warm again after the rescan")
+            self.assertEqual(data["findings"], data2["findings"])
+
+    def test_cache_version_mismatch_falls_back(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._tree(d)
+            cache = os.path.join(d, "cache.json")
+            with open(cache, "w") as fh:
+                json.dump(
+                    {"tool": "loophole", "version": "0.0.0",
+                     "config": "bogus",
+                     "entries": {"vuln.py": {
+                         "key": {"size": 0, "mtime_ns": 0, "sha256": "x"},
+                         "findings": [{"rule_id": "FAKE001",
+                                       "severity": "high", "title": "fake",
+                                       "path": "vuln.py", "line": 1,
+                                       "snippet": "x", "why": "y",
+                                       "fix": "z"}]}}}, fh)
+            _, data = scan_json(d, "--cache", cache)
+            self.assertEqual(
+                data["summary"]["cached"], 0,
+                "stale-version cache must not be trusted")
+            self.assertFalse(
+                any(f["rule_id"] == "FAKE001" for f in data["findings"]),
+                "stale cache entries must never be served")
+            self.assertIn("SEC001", rule_ids(data["findings"]),
+                          "real findings must still be produced")
+
+    def test_cache_with_baseline(self):
+        """Baseline filtering applies after cache retrieval, so a warm
+        cached run hides baselined findings exactly like a fresh run."""
+        with tempfile.TemporaryDirectory() as d:
+            self._tree(d)
+            cache = os.path.join(d, "cache.json")
+            base = os.path.join(d, "base.json")
+            proc = subprocess.run(
+                [sys.executable, SCANNER, "scan", d,
+                 "--write-baseline", base, "--cache", cache, "--no-color"],
+                capture_output=True, text=True, cwd=ROOT)
+            self.assertEqual(proc.returncode, 0)
+            _, data = scan_json(d, "--cache", cache, "--baseline", base)
+            self.assertEqual(data["findings"], [],
+                             "baseline must hide cached findings too")
+            self.assertEqual(data["summary"]["cached"], 2)
 
 
 if __name__ == "__main__":
