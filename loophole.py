@@ -31,6 +31,7 @@ Stdlib only. No dependencies.
 """
 
 import argparse
+import ast
 import difflib
 import fnmatch
 import hashlib
@@ -2905,6 +2906,208 @@ RULES = [
 
 
 # ---------------------------------------------------------------------------
+# Rule metadata for `scan --explain`
+#
+# The rule functions are the single source of truth for their own
+# metadata: each one passes its title, severity, why and fix to
+# ctx.hit() or regex_rule(). The helpers below re-read those literals
+# from this file's AST at runtime, so the text --explain prints can
+# never drift from what a scan actually reports.
+# ---------------------------------------------------------------------------
+
+def _static_str(node, consts, local):
+    """Best-effort static string for an AST node, else None.
+
+    Handles plain literals, implicit concatenation, f-strings (with
+    {expr} kept visible), names bound to string constants and
+    "a" + "b" joins. Anything else returns None.
+    """
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.JoinedStr):
+        parts = []
+        for val in node.values:
+            if isinstance(val, ast.Constant) and isinstance(val.value, str):
+                parts.append(val.value)
+            elif isinstance(val, ast.FormattedValue):
+                parts.append("{" + ast.unparse(val.value) + "}")
+            else:
+                return None
+        return "".join(parts)
+    if isinstance(node, ast.Name):
+        if node.id in local:
+            return local[node.id]
+        return consts.get(node.id)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _static_str(node.left, consts, local)
+        right = _static_str(node.right, consts, local)
+        if left is not None and right is not None:
+            return left + right
+        return None
+    return None
+
+
+class _RuleMetaVisitor(ast.NodeVisitor):
+    """Collect (severity, title, why, fix) variants from one rule
+    function, in source order. Nested function definitions are not
+    descended into, so their locals cannot leak into the rule's own
+    metadata. Local string assignments seen before a hit call are
+    used to resolve names such as `why` and `fix`."""
+
+    def __init__(self, consts, rule_id):
+        self.consts = consts
+        self.rule_id = rule_id
+        self.local = {}
+        self.variants = []
+
+    def visit_FunctionDef(self, node):
+        return
+
+    def visit_AsyncFunctionDef(self, node):
+        return
+
+    def visit_Lambda(self, node):
+        return
+
+    def visit_Assign(self, node):
+        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            val = _static_str(node.value, self.consts, self.local)
+            if val is not None:
+                self.local[node.targets[0].id] = val
+        self.generic_visit(node)
+
+    def _arg(self, call, pos, name):
+        for kw in call.keywords:
+            if kw.arg == name:
+                return kw.value
+        if len(call.args) > pos:
+            return call.args[pos]
+        return None
+
+    def _record(self, rule_id, severity, title, why, fix):
+        if not (severity and title and why and fix):
+            return
+        variant = {"severity": severity, "title": title,
+                   "why": why, "fix": fix}
+        if variant not in self.variants:
+            self.variants.append(variant)
+
+    def visit_Call(self, node):
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "hit":
+            rid = _static_str(self._arg(node, 0, "rule_id"),
+                              self.consts, self.local)
+            sev = _static_str(self._arg(node, 1, "severity"),
+                              self.consts, self.local)
+            title = _static_str(self._arg(node, 2, "title"),
+                                self.consts, self.local)
+            why = _static_str(self._arg(node, 4, "why"),
+                              self.consts, self.local)
+            fix = _static_str(self._arg(node, 5, "fix"),
+                              self.consts, self.local)
+            if rid == self.rule_id:
+                self._record(rid, sev, title, why, fix)
+        elif isinstance(func, ast.Name) and func.id == "regex_rule":
+            rid = _static_str(self._arg(node, 1, "rule_id"),
+                              self.consts, self.local)
+            sev = _static_str(self._arg(node, 2, "severity"),
+                              self.consts, self.local)
+            title = _static_str(self._arg(node, 3, "title"),
+                                self.consts, self.local)
+            why = _static_str(self._arg(node, 5, "why"),
+                              self.consts, self.local)
+            fix = _static_str(self._arg(node, 6, "fix"),
+                              self.consts, self.local)
+            if rid == self.rule_id:
+                self._record(rid, sev, title, why, fix)
+        self.generic_visit(node)
+
+
+def _extract_rule_meta(func, rule_id):
+    """Variants of one rule function, in source order.
+
+    Returns a list of {severity, title, why, fix} dicts read from the
+    ctx.hit() / regex_rule() calls inside the function, or [] when
+    nothing could be extracted. Only hits for this rule's own ID are
+    kept.
+    """
+    try:
+        with open(__file__, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+    except OSError:
+        return []
+    consts = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name):
+            val = _static_str(node.value, consts, {})
+            if val is not None:
+                consts[node.targets[0].id] = val
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == func.__name__:
+            visitor = _RuleMetaVisitor(consts, rule_id)
+            for stmt in node.body:
+                visitor.visit(stmt)
+            return visitor.variants
+    return []
+
+
+def get_rule_info(rule_id):
+    """Metadata for one rule ID, or None when the ID is unknown.
+
+    Returns id, languages, severity (the first variant's severity),
+    description (the rule function's docstring, or "") and variants,
+    a list of {severity, title, why, fix} in source order.
+    """
+    rid = rule_id.strip().upper()
+    for _rid, langs, func in RULES:
+        if _rid != rid:
+            continue
+        doc = (func.__doc__ or "").strip()
+        variants = _extract_rule_meta(func, rid)
+        return {"id": rid, "languages": list(langs),
+                "severity": variants[0]["severity"] if variants else "",
+                "description": doc,
+                "variants": variants}
+    return None
+
+
+def explain_rule(rule_id):
+    """Print one rule's detail for `scan --explain`. Returns exit code."""
+    info = get_rule_info(rule_id)
+    if info is None:
+        valid = [r for r, _, _ in RULES]
+        close = difflib.get_close_matches(rule_id.strip().upper(), valid,
+                                          n=3, cutoff=0.6)
+        print(f"loophole: unknown rule '{rule_id}'", file=sys.stderr)
+        if close:
+            print(f"did you mean: {', '.join(close)}?", file=sys.stderr)
+        print("run `loophole scan --rules` to list all rule IDs.",
+              file=sys.stderr)
+        return 2
+    if not info["variants"]:
+        print(f"loophole: no metadata found for rule {info['id']} "
+              "(internal error)", file=sys.stderr)
+        return 2
+    print(info["id"])
+    print(f"  Languages: {', '.join(info['languages'])}")
+    print(f"  Severity: {info['severity']}")
+    if info["description"]:
+        print(f"  Description: {info['description']}")
+    if len(info["variants"]) == 1:
+        variant = info["variants"][0]
+        print(f"  Title: {variant['title']}")
+        print(f"  Why: {variant['why']}")
+        print(f"  Fix: {variant['fix']}")
+    else:
+        for i, variant in enumerate(info["variants"], 1):
+            print(f"  [{i}] {variant['title']} — {variant['severity']}")
+            print(f"      Why: {variant['why']}")
+            print(f"      Fix: {variant['fix']}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Inline suppressions:
 #   # loophole: skip              -> every rule on the line
 #   # loophole: skip=SEC001,CRY003
@@ -3528,7 +3731,9 @@ def build_parser():
                     "JS/TS, Python, Go and PHP." % VERSION)
     sub = p.add_subparsers(dest="command", required=True)
     s = sub.add_parser("scan", help="scan a file or directory")
-    s.add_argument("path", help="file or directory to scan")
+    s.add_argument("path", nargs="?",
+                   help="file or directory to scan (not needed with "
+                        "--rules or --explain)")
     s.add_argument("--json", dest="json_out", metavar="FILE",
                    help="write findings as JSON")
     s.add_argument("--sarif", dest="sarif_out", metavar="FILE",
@@ -3560,17 +3765,26 @@ def build_parser():
                         "reuse findings for unchanged files (see README)")
     s.add_argument("--rules", action="store_true",
                    help="list all rule IDs and exit")
+    s.add_argument("--explain", metavar="RULEID",
+                   help="show detail for one rule ID and exit")
     return p
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.command == "scan" and args.explain:
+        return explain_rule(args.explain)
 
     if args.command == "scan" and args.rules:
         for rid, langs, _fn in RULES:
             print(f"{rid:10} {','.join(langs)}")
         print(f"\n{len(RULES)} rules total.")
         return 0
+
+    if args.path is None:
+        parser.error("the following arguments are required: path")
 
     use_color = not args.no_color and sys.stdout.isatty()
     color = Color(use_color)
