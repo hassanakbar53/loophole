@@ -10,7 +10,8 @@ user-controlled input to dangerous sinks.
 
 Usage:
     python3 loophole.py scan <path> [--json out.json] [--sarif out.sarif]
-                                    [--html report.html] [--fix-dry]
+                                    [--html report.html] [--junit report.xml]
+                                    [--fix-dry]
                                     [--severity critical,high]
                                     [--exclude dir1,dir2] [--no-color]
                                     [--config .loophole.json]
@@ -40,6 +41,7 @@ import math
 import os
 import re
 import sys
+import xml.etree.ElementTree as ET
 
 VERSION = "1.2.0"
 
@@ -3270,6 +3272,40 @@ def write_html(findings, out_path):
 
 
 # ---------------------------------------------------------------------------
+# Output: JUnit XML report (test-style results for CI dashboards)
+# ---------------------------------------------------------------------------
+
+def write_junit(findings, out_path):
+    """JUnit XML report: one testsuite, one testcase per finding.
+
+    ElementTree escapes all text and attribute values, so the output is
+    always well-formed. A clean scan emits an empty suite with
+    tests="0" failures="0".
+    """
+    suite = ET.Element("testsuite", {
+        "name": "loophole",
+        "tests": str(len(findings)),
+        "failures": str(len(findings)),
+        "errors": "0",
+        "skipped": "0",
+    })
+    for f in findings:
+        case = ET.SubElement(suite, "testcase", {
+            "classname": f.rule_id,
+            "name": f"{f.path}:{f.line}",
+        })
+        failure = ET.SubElement(case, "failure", {
+            "message": f"[{f.severity}] {f.rule_id}: {f.title}",
+            "type": f.rule_id,
+        })
+        failure.text = (f"{f.path}:{f.line}: {f.title}\n"
+                        f"{f.why}\nFix: {f.fix}\n{f.snippet}")
+    ET.ElementTree(suite).write(out_path, encoding="utf-8",
+                                xml_declaration=True)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
 # Baseline: known findings you accept today, so CI only fails on NEW ones
 # ---------------------------------------------------------------------------
 
@@ -3412,6 +3448,8 @@ def build_parser():
                         "file, exit 0")
     s.add_argument("--html", metavar="FILE", dest="html_out",
                    help="also write a self-contained HTML report")
+    s.add_argument("--junit", metavar="FILE", dest="junit_out",
+                   help="also write a JUnit XML report (for CI dashboards)")
     s.add_argument("--cache", metavar="FILE",
                    help="opt-in incremental cache file: repeat scans "
                         "reuse findings for unchanged files (see README)")
@@ -3472,6 +3510,9 @@ def main(argv=None):
     if args.html_out:
         write_html(findings, args.html_out)
         print(f"HTML report: {args.html_out}")
+    if args.junit_out:
+        write_junit(findings, args.junit_out)
+        print(f"JUnit report: {args.junit_out}")
     if args.fix_dry:
         print(color.bold("\n── Suggested fixes (dry run — nothing modified) ──\n"))
         files_lines = {}
