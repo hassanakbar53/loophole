@@ -2,6 +2,14 @@
 
 All notable changes to Loophole are documented here.
 
+## Unreleased
+
+### New features
+
+- **JUnit XML report (`--junit`)** — test-style XML output for CI
+  dashboards (Jenkins, GitLab CI, Azure DevOps, CircleCI): one
+  `<testsuite>` per scan, one `<testcase>` per finding.
+
 ## 1.2.0 — 2026-11-27
 
 ### New rules (61 → 62)
