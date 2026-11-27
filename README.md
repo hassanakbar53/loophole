@@ -59,6 +59,9 @@ python3 loophole.py scan ./src --fix-dry
 # list all rules
 python3 loophole.py scan --rules .
 
+# show what one rule checks, its severity and how to fix it
+python3 loophole.py scan --explain SEC001
+
 # only critical findings, skip tests
 python3 loophole.py scan ./src --severity critical --exclude 'tests/*'
 ```
