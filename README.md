@@ -1,6 +1,6 @@
 # 🕳️ Loophole
 
-🌐 **Website:** https://rootsiemen-portfolio-sf-c596.vercel.app · 📦 **Latest release:** [v1.2.0](https://github.com/rootsiemen/loophole/releases/tag/v1.2.0)
+🌐 **Website:** https://rootsiemen-portfolio-sf-c596.vercel.app · 📦 **Latest release:** [v1.2.1](https://github.com/rootsiemen/loophole/releases/tag/v1.2.1)
 
 This project is tested with BrowserStack.
 
@@ -164,7 +164,7 @@ Catch findings before they are committed, with the
 ```yaml
 repos:
   - repo: https://github.com/rootsiemen/loophole
-    rev: v1.2.0
+    rev: v1.2.1
     hooks:
       - id: loophole
 ```
