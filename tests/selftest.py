@@ -6,6 +6,7 @@ Run:  python3 tests/selftest.py
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -858,6 +859,66 @@ class TestCache(unittest.TestCase):
             self.assertEqual(data["findings"], [],
                              "baseline must hide cached findings too")
             self.assertEqual(data["summary"]["cached"], 2)
+
+
+class TestShellCompletions(unittest.TestCase):
+    """Shell completions stay in sync with the CLI (issue #52).
+
+    Every long flag in `loophole scan --help` must appear in both
+    completion files, so a new flag cannot land without completion
+    support. `bash -n` guards the bash script's syntax.
+    """
+
+    COMPLETIONS = ("completions/loophole.bash", "completions/_loophole")
+
+    def _scan_help_flags(self):
+        proc = subprocess.run(
+            [sys.executable, SCANNER, "scan", "--help"],
+            capture_output=True, text=True, cwd=ROOT)
+        self.assertEqual(proc.returncode, 0,
+                         "loophole scan --help must exit 0")
+        return sorted(set(re.findall(r"--[a-z][a-z-]*", proc.stdout)))
+
+    def _completion_text(self, name):
+        path = os.path.join(ROOT, name)
+        self.assertTrue(os.path.exists(path), f"{name} is missing")
+        with open(path) as fh:
+            return fh.read()
+
+    def test_completions_cover_all_scan_flags(self):
+        flags = self._scan_help_flags()
+        self.assertIn("--severity", flags)
+        for name in self.COMPLETIONS:
+            text = self._completion_text(name)
+            self.assertIn("scan", text,
+                          f"{name} does not complete the scan subcommand")
+            missing = [f for f in flags if f not in text]
+            self.assertFalse(
+                missing, f"{name} is missing flags: {missing}")
+
+    def test_completions_cover_severity_choices(self):
+        for name in self.COMPLETIONS:
+            text = self._completion_text(name)
+            for choice in ("critical", "high", "medium"):
+                self.assertIn(
+                    choice, text,
+                    f"{name} does not offer --severity choice {choice}")
+
+    def test_bash_completion_syntax(self):
+        proc = subprocess.run(
+            ["bash", "-n",
+             os.path.join(ROOT, "completions", "loophole.bash")],
+            capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0,
+                         f"bash -n failed: {proc.stderr}")
+
+    @unittest.skipUnless(shutil.which("zsh"), "zsh not installed")
+    def test_zsh_completion_syntax(self):
+        proc = subprocess.run(
+            ["zsh", "-n", os.path.join(ROOT, "completions", "_loophole")],
+            capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0,
+                         f"zsh -n failed: {proc.stderr}")
 
 
 if __name__ == "__main__":

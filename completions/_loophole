@@ -1,0 +1,54 @@
+#compdef loophole
+# Zsh completion for loophole (https://github.com/rootsiemen/loophole).
+#
+# Install: copy this file to a directory on your fpath
+# (e.g. ~/.zsh/completions), then re-run compinit:
+#
+#   cp completions/_loophole ~/.zsh/completions/_loophole
+#   rm -f ~/.zcompdump; compinit
+#
+# Completes the `scan` subcommand, every `scan` flag, the `--severity`
+# choices, file paths for the report/config options, rule IDs for
+# `--explain`, and files/directories for the scan target.
+# See README.md ("Shell completions").
+
+_loophole_rule_ids() {
+    local -a ids
+    if (( $+commands[loophole] )); then
+        ids=(${(f)"$(loophole scan --rules . 2>/dev/null | grep -oE '[A-Z]+[0-9]{3}' | sort -u)"})
+    fi
+    _describe 'rule ID' ids
+}
+
+_loophole() {
+    local -a subcommands
+    subcommands=('scan:scan a file or directory')
+    if (( CURRENT == 2 )); then
+        _describe 'subcommand' subcommands
+        return
+    fi
+    case "$words[2]" in
+        scan)
+            _arguments \
+                '1:scan target:_files' \
+                '-h[show help]' \
+                '--help[show help]' \
+                '--json[write findings as JSON]:JSON file:_files' \
+                '--sarif[write findings as SARIF 2.1.0]:SARIF file:_files' \
+                '--fix-dry[print suggested patches as diffs (never modifies)]' \
+                '--severity[minimum severity to display]:severity:(critical high medium)' \
+                '--exclude[comma-separated dir names to skip]:directory:_files -/' \
+                '--no-color[disable colored output]' \
+                '--config[config file]:config file:_files' \
+                '--baseline[baseline file]:baseline file:_files' \
+                '--write-baseline[scan, write all findings to this baseline file, exit 0]:baseline file:_files' \
+                '--html[also write a self-contained HTML report]:HTML file:_files' \
+                '--junit[also write a JUnit XML report]:JUnit file:_files' \
+                '--cache[opt-in incremental cache file]:cache file:_files' \
+                '--rules[list all rule IDs and exit]' \
+                '--explain[show detail for one rule ID and exit]:rule ID:_loophole_rule_ids'
+            ;;
+    esac
+}
+
+_loophole "$@"
