@@ -354,6 +354,31 @@ python3 loophole.py scan ./src --baseline baseline.json
 CI then fails only on **new** findings. Entries are keyed by rule,
 file and code snippet, so small line shifts don't resurrect them.
 
+## Incremental cache (`--cache`)
+
+Repeat scans of a large tree re-analyse every file. Opt in to a cache
+to skip unchanged files:
+
+```bash
+python3 loophole.py scan ./src --cache .loophole-cache.json
+```
+
+- The first run is a cold cache (everything scanned); the second
+  reuses stored findings for files that did not change.
+- Entries are keyed by file path plus size, mtime and a SHA-256 of the
+  contents, so editing a file invalidates only that file's entry.
+- The cache also records the Loophole version and the scan config: a
+  Loophole upgrade or a config change (disabled rules, severity
+  overrides) invalidates the whole cache automatically.
+- Baseline and severity filtering still apply after cache retrieval,
+  so a cached run produces exactly the same findings as an uncached
+  run. The JSON summary reports `summary.cached` — how many files were
+  served from cache — and the terminal prints the same count.
+- The cache is always opt-in: without `--cache` nothing is read or
+  written and every scan is a full scan. There is no daemon or watch
+  mode; a corrupt or unreadable cache file is ignored and the scan
+  falls back to a full scan of the affected files.
+
 ## HTML report
 
 ```bash
