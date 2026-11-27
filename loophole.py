@@ -3438,6 +3438,28 @@ def save_cache(path, entries, config_hash):
             pass
 
 
+def _dedupe_findings(findings):
+    """Collapse exact duplicate findings, keeping the first occurrence.
+
+    Two rules — or a pattern check and a taint check inside one rule —
+    can flag the same construct, so the same finding may be emitted
+    twice. The key is (path, line, rule_id, title, snippet, taint):
+    identical findings collapse to one, while two genuinely different
+    messages from the same rule on the same line are kept. Baseline
+    keys are (rule_id, path, snippet), so non-duplicate findings keep
+    exactly the same keys as before.
+    """
+    seen = set()
+    deduped = []
+    for f in findings:
+        key = (f.path, f.line, f.rule_id, f.title, f.snippet, f.taint)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(f)
+    return deduped
+
+
 def scan_path(root, excludes, config=None, ignore_patterns=None,
               cache_path=None, stats=None):
     """Scan root; returns (findings, ignored_count). --exclude and
@@ -3489,6 +3511,7 @@ def scan_path(root, excludes, config=None, ignore_patterns=None,
     if cache_path:
         save_cache(cache_path, kept, config_hash)
     stats["cached"] = cached
+    findings = _dedupe_findings(findings)
     findings.sort(key=lambda f: (SEV_ORDER[f.severity], f.path, f.line))
     return findings, stats["ignored"]
 
