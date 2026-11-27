@@ -254,6 +254,89 @@ class TestFixtures(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_dedupe_identical_findings(self):
+        """Issue #55: a rule double-emitting the same finding on one
+        line must be reported once across text, JSON and SARIF outputs,
+        while genuinely different messages from the same rule on the
+        same line stay separate."""
+        sys.path.insert(0, ROOT)
+        import loophole
+        # --- unit level: the dedupe helper itself ---------------------
+        def mk(**kw):
+            return loophole.Finding(
+                kw.get("rule_id", "SEC001"), kw.get("severity", "high"),
+                kw.get("title", "Hardcoded API key / token / secret"),
+                kw.get("path", "app.py"), kw.get("line", 3),
+                kw.get("snippet", 'API_KEY = "sk-live-" + "abcdef1234567890"'),
+                kw.get("why", "why"), kw.get("fix", "fix"),
+                kw.get("taint"))
+        dup = mk()
+        deduped = loophole._dedupe_findings([
+            dup,
+            mk(rule_id="SEC002"),            # different rule: kept
+            mk(),                             # exact duplicate: dropped
+            mk(line=4),                       # different line: kept
+            mk(title="Different title"),      # different message: kept
+            mk(taint="req.query.q -> query"),  # different taint: kept
+        ])
+        self.assertEqual(len(deduped), 5,
+                         f"dedupe collapsed the wrong findings: "
+                         f"{[(f.rule_id, f.line, f.title, f.taint) for f in deduped]}")
+        self.assertIs(deduped[0], dup, "first occurrence must be kept")
+        # --- integration: scan_path collapses a double-emit ----------
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "vuln.py")
+            with open(target, "w") as fh:
+                # Built at runtime so this test file itself carries no
+                # literal secret for the scanner to flag.
+                fh.write('API_KEY = "' + "sk-live-" + "abcdef1234567890"
+                         + '"\n')
+            baseline, _ = loophole.scan_path(tmp, [])
+            self.assertTrue(
+                any(f.rule_id == "SEC001" for f in baseline),
+                "fixture did not trigger SEC001 as expected")
+            orig_scan_file = loophole.scan_file
+
+            def double_emit(path, config=None):
+                # Simulate a rule double-emitting the same finding.
+                return orig_scan_file(path, config) * 2
+
+            loophole.scan_file = double_emit
+            try:
+                doubled, _ = loophole.scan_path(tmp, [])
+            finally:
+                loophole.scan_file = orig_scan_file
+            self.assertEqual(
+                [(f.rule_id, f.path, f.line) for f in doubled],
+                [(f.rule_id, f.path, f.line) for f in baseline],
+                "scan_path must report a double-emitted finding once")
+            self.assertEqual(
+                {loophole._baseline_key(f) for f in doubled},
+                {loophole._baseline_key(f) for f in baseline},
+                "baseline keys must be unchanged by dedupe")
+            # --- every output format sees the finding once -----------
+            import io
+            from contextlib import redirect_stdout
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                loophole.print_report(doubled, loophole.Color(False))
+            self.assertEqual(buf.getvalue().count("SEC001"), 1,
+                             "text report repeated the finding")
+            json_path = os.path.join(tmp, "out.json")
+            loophole.write_json(doubled, json_path)
+            with open(json_path) as fh:
+                data = json.load(fh)
+            self.assertEqual(
+                [f["rule_id"] for f in data["findings"]].count("SEC001"),
+                1, "JSON report repeated the finding")
+            sarif_path = os.path.join(tmp, "out.sarif")
+            loophole.write_sarif(doubled, sarif_path)
+            with open(sarif_path) as fh:
+                sarif = json.load(fh)
+            results = sarif["runs"][0]["results"]
+            self.assertEqual(
+                [r["ruleId"] for r in results].count("SEC001"), 1,
+                "SARIF report repeated the finding")
 
     def test_deser001_php_taint(self):
         """DESER001 (PHP): unserialize() is high + tainted on user input,
