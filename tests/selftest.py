@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -386,6 +387,55 @@ class TestFixtures(unittest.TestCase):
             self.assertNotIn("http://", page.replace(
                 "http://www.w3.org", ""),
                 "HTML report must not reference external assets")
+        finally:
+            os.unlink(out)
+
+    def test_junit_report(self):
+        with tempfile.NamedTemporaryFile(suffix=".xml",
+                                         delete=False) as tmp:
+            out = tmp.name
+        try:
+            target = os.path.join(FIX, "js_vuln.js")
+            proc = subprocess.run(
+                [sys.executable, SCANNER, "scan", target,
+                 "--junit", out, "--no-color"],
+                capture_output=True, text=True, cwd=ROOT)
+            self.assertEqual(proc.returncode, 1)
+            suite = ET.parse(out).getroot()
+            self.assertEqual(suite.tag, "testsuite")
+            cases = suite.findall("testcase")
+            _, findings = scan(target)
+            self.assertEqual(len(cases), len(findings),
+                             "JUnit testcase count != JSON findings count")
+            self.assertEqual(suite.get("tests"), str(len(findings)))
+            self.assertEqual(suite.get("failures"), str(len(findings)))
+            for case in cases:
+                failure = case.find("failure")
+                self.assertIsNotNone(failure, "testcase has no <failure>")
+                self.assertEqual(case.get("classname"),
+                                 failure.get("type"))
+                self.assertIn(case.get("classname"),
+                              failure.get("message"),
+                              "failure message must name the rule")
+                self.assertIn("[", failure.get("message"),
+                              "failure message must include the severity")
+            # clean fixture: an empty suite
+            with tempfile.NamedTemporaryFile(suffix=".xml",
+                                             delete=False) as tmp2:
+                clean_out = tmp2.name
+            try:
+                proc = subprocess.run(
+                    [sys.executable, SCANNER, "scan",
+                     os.path.join(FIX, "js_clean.js"),
+                     "--junit", clean_out, "--no-color"],
+                    capture_output=True, text=True, cwd=ROOT)
+                self.assertEqual(proc.returncode, 0)
+                clean_suite = ET.parse(clean_out).getroot()
+                self.assertEqual(clean_suite.get("tests"), "0")
+                self.assertEqual(clean_suite.get("failures"), "0")
+                self.assertEqual(clean_suite.findall("testcase"), [])
+            finally:
+                os.unlink(clean_out)
         finally:
             os.unlink(out)
 
