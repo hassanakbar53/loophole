@@ -176,6 +176,36 @@ pip-installable (issue #21), the hook runs from a checkout of this
 repository via a small wrapper script, because `loophole scan` takes a
 single path per invocation.
 
+## Shell completions
+
+Tab-completion for `bash` and `zsh` lives in `completions/`:
+
+```bash
+# bash — copy the script into your completions directory, then start
+# a new shell (or `source` it for the current session only)
+cp completions/loophole.bash ~/.local/share/bash-completion/completions/loophole
+
+# zsh — copy the file to a directory on your fpath, then re-run compinit
+mkdir -p ~/.zsh/completions
+cp completions/_loophole ~/.zsh/completions/_loophole
+rm -f ~/.zcompdump; compinit
+```
+
+If `~/.zsh/completions` is not already on your `fpath`, add this to
+`~/.zshrc` before `compinit`:
+
+```zsh
+fpath=(~/.zsh/completions $fpath)
+```
+
+Both complete the `scan` subcommand, every `scan` flag, the
+`--severity` choices (`critical`, `high`, `medium`), file paths for
+the report/config options (`--json`, `--sarif`, `--html`, `--junit`,
+`--config`, `--baseline`, `--write-baseline`, `--cache`), rule IDs for
+`--explain`, and files/directories for the scan target. The selftest
+suite checks that every flag in `loophole scan --help` appears in both
+files, so the completions cannot silently drift from the CLI.
+
 ## Example output
 
 ```
@@ -449,6 +479,9 @@ title. A clean scan emits an empty suite (`tests="0" failures="0"`).
 ```
 loophole/
 ├── loophole.py            # the scanner (single file, stdlib only)
+├── completions/           # shell completions for bash and zsh
+│   ├── loophole.bash
+│   └── _loophole
 ├── Dockerfile               # container image: python:3.12-slim, non-root, stdlib only
 ├── loophole                # shell wrapper: loophole scan <path>
 ├── README.md
