@@ -1,6 +1,6 @@
 # 🕳️ Loophole
 
-🌐 **Website:** https://rootsiemen-portfolio-sf-c596.vercel.app · 📦 **Latest release:** [v1.2.1](https://github.com/rootsiemen/loophole/releases/tag/v1.2.1)
+🌐 **Website:** https://frinjo.me/loophole · 📦 **Latest release:** [v1.2.1](https://github.com/rootsiemen/loophole/releases/tag/v1.2.1)
 
 This project is tested with BrowserStack.
 
