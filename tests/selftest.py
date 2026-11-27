@@ -53,6 +53,29 @@ def scan_json(path, *extra):
         os.unlink(out)
 
 
+def run_scan_full(path, *extra):
+    """Run the scanner, return (CompletedProcess, parsed JSON report).
+
+    The JSON report is None when the scanner exits before writing one
+    (for example exit code 2 on an unreadable baseline); the process
+    result still carries the exit code and stderr.
+    """
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+        out = tmp.name
+    try:
+        proc = subprocess.run(
+            [sys.executable, SCANNER, "scan", path,
+             "--json", out, "--no-color"] + list(extra),
+            capture_output=True, text=True, cwd=ROOT)
+        try:
+            with open(out) as fh:
+                return proc, json.load(fh)
+        except (OSError, ValueError):
+            return proc, None
+    finally:
+        os.unlink(out)
+
+
 def scan_sarif(path):
     """Run the scanner with --sarif, return (exit_code, parsed SARIF)."""
     with tempfile.NamedTemporaryFile(suffix=".sarif", delete=False) as tmp:
@@ -696,6 +719,230 @@ class TestFixtures(unittest.TestCase):
             code, findings = scan(target, "--baseline", base)
             self.assertEqual(findings, [],
                              "baseline did not suppress known findings")
+            self.assertEqual(code, 0)
+        finally:
+            os.unlink(base)
+
+    def test_config_parser_edge_cases(self):
+        """Issue #51: a broken .loophole.json warns on stderr and is
+        ignored — the scan still completes with the same findings and
+        no traceback. Covers malformed JSON, a JSON array, wrong-type
+        exclude / disable / severity values, a severity override for
+        an unknown rule id, and --config pointing at a directory."""
+        vuln = ('API_KEY = "sk-live-abcdef1234567890"\n'
+                'DB_PASSWORD = "hunter2hunter2"\n')  # loophole: skip=SEC002
+        cases = [
+            ("malformed JSON", "{not json", "cannot read config"),
+            ("JSON array", '["SEC001"]', "not a JSON object"),
+            ("exclude as a string",
+             json.dumps({"exclude": "skipme.py"}), "exclude"),
+            ("disable as a string",
+             json.dumps({"disable": "SEC002"}), "disable"),
+            ("severity for an unknown rule",
+             json.dumps({"severity": {"NOPE999": "medium"}}), "NOPE999"),
+            ("severity not an object",
+             json.dumps({"severity": "high"}), "severity"),
+        ]
+        for label, content, needle in cases:
+            with self.subTest(case=label):
+                with tempfile.TemporaryDirectory() as d:
+                    with open(os.path.join(d, "app.py"), "w") as fh:
+                        fh.write(vuln)
+                    with open(os.path.join(d, "skipme.py"), "w") as fh:
+                        fh.write(vuln)
+                    _, base = scan(d)
+                    base_keys = sorted(
+                        (f["rule_id"], os.path.basename(f["path"]),
+                         f["line"], f["severity"]) for f in base)
+                    with open(os.path.join(d, ".loophole.json"),
+                              "w") as fh:
+                        fh.write(content)
+                    proc, data = run_scan_full(d)
+                    self.assertIsNotNone(
+                        data, "broken config stopped the JSON report")
+                    self.assertNotIn("Traceback", proc.stderr,
+                                     f"{label}: scan crashed")
+                    self.assertIn("warning", proc.stderr,
+                                  f"{label}: broken config did not warn")
+                    self.assertIn(needle, proc.stderr,
+                                  f"{label}: warning did not name the "
+                                  f"problem ({needle!r})")
+                    got_keys = sorted(
+                        (f["rule_id"], os.path.basename(f["path"]),
+                         f["line"], f["severity"])
+                        for f in data["findings"])
+                    self.assertEqual(
+                        got_keys, base_keys,
+                        f"{label}: findings changed under broken config")
+                    if label == "exclude as a string":
+                        self.assertTrue(
+                            any(f["rule_id"] == "SEC001" and
+                                f["path"].endswith("skipme.py")
+                                for f in data["findings"]),
+                            "string exclude must not exclude anything")
+                    if label == "disable as a string":
+                        self.assertIn(
+                            "SEC002", rule_ids(data["findings"]),
+                            "string disable must not disable anything")
+                    if label == "severity for an unknown rule":
+                        sec1 = [f for f in data["findings"]
+                                if f["rule_id"] == "SEC001"]
+                        base_sec1 = [f for f in base
+                                     if f["rule_id"] == "SEC001"]
+                        self.assertEqual(
+                            [f["severity"] for f in sec1],
+                            [f["severity"] for f in base_sec1],
+                            "unknown-rule severity must not change "
+                            "any finding")
+
+        with self.subTest(case="--config is a directory"):
+            with tempfile.TemporaryDirectory() as d:
+                with open(os.path.join(d, "app.py"), "w") as fh:
+                    fh.write(vuln)
+                _, base = scan(d)
+                base_keys = sorted(
+                    (f["rule_id"], os.path.basename(f["path"]),
+                     f["line"], f["severity"]) for f in base)
+                cfgdir = os.path.join(d, "cfgdir")
+                os.mkdir(cfgdir)
+                proc, data = run_scan_full(d, "--config", cfgdir)
+                self.assertIsNotNone(
+                    data, "--config directory stopped the JSON report")
+                self.assertNotIn("Traceback", proc.stderr,
+                                 "--config directory crashed the scan")
+                self.assertIn("warning", proc.stderr,
+                              "--config directory did not warn")
+                self.assertIn("cannot read config", proc.stderr)
+                got_keys = sorted(
+                    (f["rule_id"], os.path.basename(f["path"]),
+                     f["line"], f["severity"])
+                    for f in data["findings"])
+                self.assertEqual(got_keys, base_keys,
+                                 "--config directory changed findings")
+
+    def test_loopholeignore_edge_cases(self):
+        """Issue #51: CRLF line endings, blank lines and '#' comments
+        interleaved with patterns, and a pattern naming a file that
+        does not exist must never crash a scan — ignored files stay
+        skipped and the rest scan as normal."""
+        vuln = 'API_KEY = "sk-live-abcdef1234567890"\n'
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "app.py"), "w") as fh:
+                fh.write(vuln)
+            with open(os.path.join(d, "skipme.py"), "w") as fh:
+                fh.write(vuln)
+            with open(os.path.join(d, "app.min.js"), "w") as fh:
+                fh.write(vuln)
+            os.mkdir(os.path.join(d, "generated"))
+            with open(os.path.join(d, "generated", "gen.py"),
+                      "w") as fh:
+                fh.write(vuln)
+            with open(os.path.join(d, ".loopholeignore"), "wb") as fh:
+                fh.write(b"# ignore generated output\r\n"
+                         b"\r\n"
+                         b"skipme.py\r\n"
+                         b"# vendored files\r\n"
+                         b"\r\n"
+                         b"*.min.js\r\n"
+                         b"generated/\r\n")
+            proc, data = run_scan_full(d)
+            self.assertIsNotNone(
+                data, "CRLF .loopholeignore stopped the JSON report")
+            self.assertNotIn("Traceback", proc.stderr,
+                             "CRLF .loopholeignore crashed the scan")
+            self.assertEqual(proc.returncode, 1)
+            paths = {f["path"] for f in data["findings"]}
+            self.assertTrue(
+                any(p.endswith("app.py") for p in paths),
+                "app.py findings missing under CRLF .loopholeignore")
+            self.assertFalse(
+                any("skipme.py" in p or "app.min.js" in p or
+                    "generated" in p for p in paths),
+                f"ignored files still scanned: {sorted(paths)}")
+            self.assertEqual(data["summary"]["ignored"], 3,
+                             "JSON summary should count the 3 ignored "
+                             "files under a CRLF ignore file")
+
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "app.py"), "w") as fh:
+                fh.write(vuln)
+            with open(os.path.join(d, "skipme.py"), "w") as fh:
+                fh.write(vuln)
+            with open(os.path.join(d, ".loopholeignore"), "w") as fh:
+                fh.write("skipme.py\nno-such-file.py\n")
+            proc, data = run_scan_full(d)
+            self.assertIsNotNone(
+                data, "nonexistent ignore pattern stopped the report")
+            self.assertNotIn("Traceback", proc.stderr,
+                             "nonexistent ignore pattern crashed the "
+                             "scan")
+            paths = {f["path"] for f in data["findings"]}
+            self.assertTrue(
+                any(p.endswith("app.py") for p in paths),
+                "app.py findings missing with a nonexistent pattern")
+            self.assertFalse(
+                any("skipme.py" in p for p in paths),
+                "skipme.py was not ignored")
+            self.assertEqual(data["summary"]["ignored"], 1,
+                             "a pattern naming no file must not inflate "
+                             "the ignored count")
+
+    def test_baseline_edge_cases(self):
+        """Issue #51: a baseline whose entries miss keys exits 2 with
+        a clear 'cannot read baseline' message and no traceback,
+        while extra keys in entries (or at the top level) are ignored
+        and suppression still works."""
+        target = os.path.join(FIX, "py_vuln.py")
+        missing_key_cases = [
+            ("entry missing path and snippet",
+             [{"rule_id": "SEC001"}]),
+            ("entry missing rule_id",
+             [{"path": "py_vuln.py", "snippet": "x"}]),
+        ]
+        for label, entries in missing_key_cases:
+            with self.subTest(case=label):
+                with tempfile.NamedTemporaryFile(
+                        suffix=".json", delete=False, mode="w") as tmp:
+                    json.dump({"tool": "loophole", "version": "1.2.0",
+                               "entries": entries}, tmp)
+                    base = tmp.name
+                try:
+                    proc = subprocess.run(
+                        [sys.executable, SCANNER, "scan", target,
+                         "--baseline", base, "--no-color"],
+                        capture_output=True, text=True, cwd=ROOT)
+                    self.assertEqual(proc.returncode, 2,
+                                     f"{label}: bad baseline did not "
+                                     f"exit 2")
+                    self.assertIn("cannot read baseline", proc.stderr,
+                                  f"{label}: no clear baseline error")
+                    self.assertNotIn("Traceback", proc.stderr,
+                                     f"{label}: bad baseline crashed "
+                                     f"with a traceback")
+                finally:
+                    os.unlink(base)
+
+        with tempfile.NamedTemporaryFile(suffix=".json",
+                                         delete=False) as tmp:
+            base = tmp.name
+        try:
+            proc = subprocess.run(
+                [sys.executable, SCANNER, "scan", target,
+                 "--write-baseline", base, "--no-color"],
+                capture_output=True, text=True, cwd=ROOT)
+            self.assertEqual(proc.returncode, 0)
+            with open(base) as fh:
+                data = json.load(fh)
+            self.assertTrue(data["entries"],
+                            "baseline file has no entries")
+            for entry in data["entries"]:
+                entry["extra_key"] = "ignored"
+            data["extra_top_level"] = True
+            with open(base, "w") as fh:
+                json.dump(data, fh)
+            code, findings = scan(target, "--baseline", base)
+            self.assertEqual(findings, [],
+                             "extra baseline keys broke suppression")
             self.assertEqual(code, 0)
         finally:
             os.unlink(base)
