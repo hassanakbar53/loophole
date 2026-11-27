@@ -4,6 +4,12 @@ All notable changes to Loophole are documented here.
 
 ## Unreleased
 
+### New features
+
+- **JUnit XML report (`--junit`)** — test-style XML output for CI
+  dashboards (Jenkins, GitLab CI, Azure DevOps, CircleCI): one
+  `<testsuite>` per scan, one `<testcase>` per finding.
+
 ### Taint & coverage
 
 - **DESER001 (PHP)** — `unserialize()` is now taint-aware (fixes #10):
@@ -17,7 +23,6 @@ All notable changes to Loophole are documented here.
   plain copies and is dropped on reassignment to trusted data, taint is
   checked on the payload argument only, and sources named only in
   comments do not taint a variable.
-
 ## 1.2.0 — 2026-11-27
 
 ### New rules (61 → 62)
