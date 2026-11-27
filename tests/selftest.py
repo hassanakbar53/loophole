@@ -191,6 +191,127 @@ class TestFixtures(unittest.TestCase):
             os.unlink(path)
 
 
+    def test_deser001_php_taint(self):
+        """DESER001 (PHP): unserialize() is high + tainted on user input,
+        medium on dynamic data of unknown origin, and silent on string
+        literals, allowed_classes and json_decode (issue #10)."""
+        sys.path.insert(0, ROOT)
+        import loophole
+        src = (
+            "<?php\n"
+            "$a = unserialize($_COOKIE['prefs']);\n"
+            "$prefs = $_POST['prefs'];\n"
+            "$b = unserialize($prefs);\n"
+            "$c = unserialize($stored);\n"
+            "$d = unserialize('a:1:{i:0;s:3:\"foo\";}');\n"
+            "$e = unserialize($x, ['allowed_classes' => false]);\n"
+            "$f = json_decode($_GET['data'], true);\n"
+            "$g = unserialize(file_get_contents('php://input'));\n"
+        )
+        with tempfile.NamedTemporaryFile(
+                suffix=".php", mode="w", delete=False) as tmp:
+            tmp.write(src)
+            path = tmp.name
+        try:
+            findings = [f for f in loophole.scan_file(path)
+                        if f.rule_id == "DESER001"]
+            by_line = {f.line: f for f in findings}
+            for ln in (2, 4, 9):
+                self.assertIn(ln, by_line,
+                              f"line {ln}: tainted unserialize() not "
+                              "flagged")
+                self.assertEqual(by_line[ln].severity, "high",
+                                 f"line {ln}: tainted unserialize() "
+                                 "should be high")
+                self.assertTrue(by_line[ln].taint,
+                                f"line {ln}: finding should carry a "
+                                "taint flow note")
+                self.assertIn("unserialize", by_line[ln].taint)
+            # The taint note must name the real source and variable chain,
+            # not just the sink — otherwise broken flow reporting passes.
+            self.assertIn("$_COOKIE", by_line[2].taint,
+                          "line 2: taint note should name the $_COOKIE source")
+            self.assertIn("$prefs", by_line[4].taint,
+                          "line 4: taint note should name the $prefs variable")
+            self.assertIn("$_POST", by_line[4].taint,
+                          "line 4: taint note should name the $_POST source")
+            self.assertIn("php://input", by_line[9].taint,
+                          "line 9: taint note should name the php://input source")
+            self.assertIn(5, by_line,
+                          "line 5: dynamic unserialize() not flagged")
+            self.assertEqual(by_line[5].severity, "medium",
+                             "line 5: untainted dynamic data should be "
+                             "medium, not high")
+            self.assertFalse(by_line[5].taint,
+                             "line 5: no taint flow should be recorded")
+            for ln in (6, 7, 8):
+                self.assertNotIn(ln, by_line,
+                                 f"line {ln}: safe counterpart flagged")
+        finally:
+            os.unlink(path)
+
+    def test_deser001_php_review_fixes(self):
+        """DESER001 (PHP): review fixes on PR #56 — multiline calls,
+        allowed_classes values, copied/reassigned taint, taint confined
+        to the payload argument, comment-only sources, and literal
+        payloads with an options argument."""
+        sys.path.insert(0, ROOT)
+        import loophole
+        src = (
+            "<?php\n"                                              # 1
+            "$a = $_GET['data'];\n"                               # 2
+            "$b = $a;\n"                                          # 3
+            "$c = unserialize($b);\n"                             # 4 high (copy)
+            "$d = unserialize(\n"                                 # 5 high (multiline)
+            "    $_COOKIE['prefs']\n"                             # 6
+            ");\n"                                                 # 7
+            "$e = unserialize('a:0:{}', ['allowed_classes' => ['A']]);\n"  # 8 silent
+            "$f = unserialize($x, ['allowed_classes' => true]);\n"  # 9 medium
+            "$g = unserialize($y); // allowed_classes => false\n"  # 10 medium
+            "$h = $clean; // copied from $_GET\n"                 # 11
+            "$i = unserialize($h);\n"                            # 12 medium
+            "$j = $_POST['x'];\n"                                # 13
+            "$j = 'safe';\n"                                     # 14
+            "$k = unserialize($j);\n"                            # 15 medium
+            "$l = unserialize($m);\n"                            # 16 medium
+            "$m = $_GET['x'];\n"                                 # 17
+            "$n = 'a:0:{}';\n"                                   # 18
+            "$o = unserialize($n, $_GET['opts']);\n"             # 19 medium
+            "$p = unserialize($u); $q = unserialize($_GET['z']);\n"  # 20 medium+high
+        )
+        with tempfile.NamedTemporaryFile(
+                suffix=".php", mode="w", delete=False) as tmp:
+            tmp.write(src)
+            path = tmp.name
+        try:
+            findings = [f for f in loophole.scan_file(path)
+                        if f.rule_id == "DESER001"]
+            by_line = {f.line: f for f in findings}
+            self.assertEqual(by_line[4].severity, "high",
+                             "line 4: copied taint should stay high")
+            self.assertIn("$b", by_line[4].taint)
+            self.assertIn("$_GET", by_line[4].taint)
+            self.assertEqual(by_line[5].severity, "high",
+                             "line 5: multiline tainted call should be high")
+            self.assertIn("$_COOKIE", by_line[5].taint)
+            self.assertNotIn(8, by_line,
+                             "line 8: literal payload with options flagged")
+            for ln in (9, 10, 12, 15, 16, 19):
+                self.assertIn(ln, by_line,
+                              f"line {ln}: unserialize() not flagged")
+                self.assertEqual(by_line[ln].severity, "medium",
+                                 f"line {ln}: should be medium, not high")
+                self.assertFalse(by_line[ln].taint,
+                                 f"line {ln}: no taint flow should be recorded")
+            line20 = [f for f in findings if f.line == 20]
+            self.assertEqual(len(line20), 2,
+                             "line 20: both calls on the line should be flagged")
+            self.assertEqual({f.severity for f in line20},
+                             {"medium", "high"},
+                             "line 20: second call (tainted) should be high")
+        finally:
+            os.unlink(path)
+
     def test_ignore_suppression(self):
         """loophole:ignore (space and = forms, plus bare) silences rules."""
         sys.path.insert(0, ROOT)

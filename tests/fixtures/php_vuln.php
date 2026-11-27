@@ -27,7 +27,22 @@ $data = file_get_contents($_GET['page']); // PATH001 (tainted)
 include $_GET['tpl']; // PATH001 (tainted, LFI)
 
 // --- 2026 expansion: new-rule coverage ---
-$obj = unserialize($_GET['data']); // DESER001
+$obj = unserialize($_GET['data']); // DESER001 (direct superglobal)
+
+$prefs = $_COOKIE['prefs']; // tainted
+$obj2 = unserialize($prefs); // DESER001 (tainted var, 2-hop)
+
+$stored = $cache->get('session'); // origin unknown to the scanner
+$obj3 = unserialize($stored); // DESER001 (dynamic data, medium)
+
+$obj4 = unserialize(file_get_contents('php://input')); // DESER001 (php://input)
+
+$copy = $prefs; // tainted copy
+$obj5 = unserialize($copy); // DESER001 (tainted var, copied)
+
+$obj6 = unserialize(
+    $_GET['multi']
+); // DESER001 (multiline tainted, high)
 
 $zip = new ZipArchive;
 $zip->open('up.zip');

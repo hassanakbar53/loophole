@@ -190,7 +190,7 @@ Loophole found 3 issue(s): 1 critical, 2 high, 0 medium
 | DBG001 | medium | Debug mode enabled (`debug=True`, `DEBUG = True`) |
 | ERR001 | medium | Stack traces / exception details sent to client |
 | PROTO001 | high | Prototype pollution via deep-merge of user input (JS/TS) |
-| DESER001 | high | Unsafe deserialization (`pickle`, `shelve`, `unserialize`, `yaml.load`) |
+| DESER001 | high | Unsafe deserialization (`pickle`, `shelve`, `unserialize`, `yaml.load`) — PHP `unserialize()` on dynamic data of unknown origin is medium |
 | NOSQL001 | high | NoSQL injection — input flowing into MongoDB-style queries |
 | XXE001 | high | XML external entity — XML parsers without hardening |
 | REDIR001 | medium | Open redirect — target taken from user input |

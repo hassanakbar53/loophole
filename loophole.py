@@ -158,6 +158,21 @@ def is_single_string_literal(arg):
     return not code.strip(" \t\"'`")
 
 
+def _is_constant_payload(arg):
+    """True if a PHP unserialize() payload is a constant string literal.
+
+    Checks the payload argument alone (an options argument must not
+    make a literal look dynamic). PHP double-quoted strings interpolate
+    $vars, so those are dynamic, not constant.
+    """
+    if not is_single_string_literal(arg):
+        return False
+    a = arg.strip()
+    if a.startswith('"') and re.search(r"\$[A-Za-z_{]", a):
+        return False
+    return True
+
+
 def word_in(text, word):
     """Whole-word (or $var) occurrence check."""
     return re.search(r"(?<![\w$])" + re.escape(word) + r"(?![\w])", text) is not None
@@ -289,12 +304,66 @@ def find_tainted_vars(lines, lang):
     return tainted
 
 
+def _php_tainted_asof(lines, upto_line):
+    """Tainted PHP vars as of a given call line (1-based, inclusive).
+
+    DESER001-only view of taint: assignments are replayed in order, so
+    a reassignment to trusted data — or an assignment that only happens
+    after the call — does not count. Taint propagates through plain
+    copies ($b = $a) but not through function calls, which may validate
+    or sanitize (e.g. path.resolve). Line comments are stripped first
+    so a source named only in a comment cannot taint a variable.
+    """
+    tainted = {}
+    pat = ASSIGN_PATTERNS["php"][0]
+    for line in lines[:upto_line]:
+        code = line.split("//")[0].split("#")[0]
+        m = re.search(pat, code)
+        if not m:
+            continue
+        lhs, rhs = m.group(1), m.group(2)
+        # avoid `==`, `!=`, `<=`, `>=` false matches
+        before = code[m.start():]
+        if re.match(r"[A-Za-z_$\w]*\s*[=!<>]=\s*", before):
+            continue
+        if _source_hit(rhs, "php"):
+            tainted[lhs] = rhs.strip()[:60]
+        else:
+            src_var = tainted_in_call(rhs, tainted)
+            if src_var and "(" not in rhs:
+                # plain copy of a tainted variable: propagate its source
+                tainted[lhs] = tainted[src_var]
+            elif lhs in tainted:
+                # reassigned to untainted data: taint no longer flows
+                del tainted[lhs]
+    return tainted
+
+
 def tainted_in_call(arg_text, tainted):
     """Return the tainted var name flowing into this call, or None."""
     for var in tainted:
         if word_in(arg_text, var):
             return var
     return None
+
+
+def _flow_in(args, tainted, lang):
+    """Taint flow into call arguments against an explicit tainted map.
+
+    Returns (var_name_or_None, source_text_or_None). Detects variables
+    assigned from tainted sources AND direct source usage such as
+    query($_GET['id']) (1-hop).
+    """
+    if args is None:
+        return None, None
+    var = tainted_in_call(args, tainted)
+    if var:
+        return var, tainted[var]
+    for pat in TAINT_SOURCES[lang]:
+        m = re.search(pat, args)
+        if m:
+            return None, m.group(0)
+    return None, None
 
 
 def call_args(line, func_pat):
@@ -331,8 +400,16 @@ def call_args(line, func_pat):
 
 def _first_arg(args):
     """Return the first top-level comma-separated argument."""
+    parts = _split_top_level_args(args)
+    return parts[0] if parts else args
+
+
+def _split_top_level_args(args):
+    """Split argument text on top-level commas (nesting/string aware)."""
+    parts = []
     depth = 0
     in_str = None
+    start = 0
     i = 0
     while i < len(args):
         ch = args[i]
@@ -344,14 +421,50 @@ def _first_arg(args):
                 in_str = None
         elif ch in "\"'`":
             in_str = ch
-        elif ch in "([":
+        elif ch in "([{":
             depth += 1
-        elif ch in ")]":
+        elif ch in ")]}":
             depth -= 1
         elif ch == "," and depth == 0:
-            return args[:i]
+            parts.append(args[start:i])
+            start = i + 1
         i += 1
-    return args
+    parts.append(args[start:])
+    return parts
+
+
+def _iter_call_args(lines, start_line, func_pat):
+    """Yield the argument text of every func_pat(...) call starting on
+    start_line (1-based), collecting across physical lines until the
+    parens balance. Handles several calls on one line.
+    """
+    text = "\n".join(lines[start_line - 1:])
+    first_line = lines[start_line - 1]
+    for m in re.finditer(func_pat + r"\s*\(", first_line):
+        start = m.end()  # just after '('; same offset in joined text
+        depth = 1
+        in_str = None
+        i = start
+        while i < len(text):
+            ch = text[i]
+            if in_str:
+                if ch == "\\":
+                    i += 2
+                    continue
+                if ch == in_str:
+                    in_str = None
+            elif ch in "\"'`":
+                in_str = ch
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    yield text[start:i]
+                    break
+            i += 1
+        else:
+            yield text[start:]  # unterminated; return what we have
 
 
 def find_formatted_vars(lines, lang):
@@ -411,16 +524,7 @@ class Ctx:
         assigned from tainted sources AND direct source usage such as
         query($_GET['id']) (1-hop).
         """
-        if args is None:
-            return None, None
-        var = tainted_in_call(args, self.tainted)
-        if var:
-            return var, self.tainted[var]
-        for pat in TAINT_SOURCES[self.lang]:
-            m = re.search(pat, args)
-            if m:
-                return None, m.group(0)
-        return None, None
+        return _flow_in(args, self.tainted, self.lang)
 
 
 def regex_rule(ctx, rule_id, severity, title, patterns, why, fix,
@@ -1456,18 +1560,57 @@ def rule_DESER001(ctx):
                     "prefer JSON or SQLite for untrusted data."))
     elif ctx.lang == "php":
         for i, line in enumerate(ctx.lines, 1):
-            args = call_args(line, r"\bunserialize")
-            if args is None or "allowed_classes" in line:
-                continue
-            if is_string_literal(args):
-                continue  # unserializing a constant string: inert
-            out.append(ctx.hit(
-                "DESER001", "high", "unserialize() on dynamic data", i,
-                "PHP unserialize() on attacker-influenced strings enables "
-                "object injection — magic methods (__wakeup/__unserialize) "
-                "in any loaded class become attacker-controlled.",
-                "Use json_decode() for untrusted data, or pass "
-                "['allowed_classes' => false] to unserialize()."))
+            # Every unserialize() call starting on this line, with its
+            # full argument list even when the call spans lines.
+            for args in _iter_call_args(ctx.lines, i, r"\bunserialize"):
+                first = _first_arg(args)
+                rest = _split_top_level_args(args)
+                # Only a locked-down options argument silences the call:
+                # ['allowed_classes' => false]. Any other value (true,
+                # a class list) — or the text appearing only in a
+                # comment — leaves the payload reportable.
+                if len(rest) > 1 and re.search(
+                        r"""['"]allowed_classes['"]\s*=>\s*false\b""",
+                        rest[1]):
+                    continue
+                if _is_constant_payload(first):
+                    continue  # unserializing a constant string: inert
+                # Taint as of this call only: assignments after it, and
+                # reassignments to trusted data before it, do not count.
+                # Flow is checked on the payload argument alone, so
+                # tainted options cannot implicate a clean payload.
+                tainted_here = _php_tainted_asof(ctx.lines, i)
+                taint_var, taint_src = _flow_in(first, tainted_here,
+                                                ctx.lang)
+                if taint_var or taint_src:
+                    # Confirmed user-controlled input (direct superglobal or
+                    # a variable assigned from one): object injection.
+                    out.append(ctx.hit(
+                        "DESER001", "high",
+                        "unserialize() on user-controlled input", i,
+                        "PHP unserialize() on attacker-controlled strings "
+                        "enables object injection — magic methods "
+                        "(__wakeup/__unserialize) in any loaded class become "
+                        "attacker-controlled.",
+                        "Never unserialize user input; use json_decode/"
+                        "json_encode, or sign the payload (HMAC) and verify "
+                        "before unserializing.",
+                        taint=_taint_note(taint_var, taint_src,
+                                          "unserialize")))
+                else:
+                    # Dynamic data whose origin is not visible in this file:
+                    # dangerous if it is ever attacker-controlled, so still
+                    # flagged, at lower severity than confirmed taint.
+                    out.append(ctx.hit(
+                        "DESER001", "medium",
+                        "unserialize() on dynamic data", i,
+                        "PHP unserialize() on a string of unknown origin "
+                        "enables object injection if the data is ever "
+                        "attacker-controlled — magic methods "
+                        "(__wakeup/__unserialize) in any loaded class become "
+                        "attacker-controlled.",
+                        "Use json_decode() for untrusted data, or pass "
+                        "['allowed_classes' => false] to unserialize()."))
     elif ctx.lang == "js":
         pats = [r"\bserialize\.unserialize\s*\(",
                 r"require\s*\(\s*['\"]node-serialize['\"]\s*\)"]
