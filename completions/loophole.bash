@@ -14,7 +14,7 @@ _loophole() {
     local -a flags=(
         -h --help
         --json --sarif --fix-dry --severity --exclude --no-color
-        --config --baseline --write-baseline --html --junit --cache
+        --config --baseline --write-baseline --html --junit --gitlab --cache
         --rules --explain
     )
     cur="${COMP_WORDS[COMP_CWORD]}"
@@ -28,7 +28,7 @@ _loophole() {
             --severity)
                 COMPREPLY=( $(compgen -W "critical high medium" -- "$val") )
                 ;;
-            --json|--sarif|--config|--baseline|--write-baseline|--html|--junit|--cache)
+            --json|--sarif|--config|--baseline|--write-baseline|--html|--junit|--gitlab|--cache)
                 COMPREPLY=( $(compgen -f -- "$val") )
                 ;;
         esac
@@ -59,7 +59,7 @@ _loophole() {
                     COMPREPLY=( $(compgen -W "critical high medium" -- "$cur") )
                     return 0
                     ;;
-                --json|--sarif|--config|--baseline|--write-baseline|--html|--junit|--cache)
+                --json|--sarif|--config|--baseline|--write-baseline|--html|--junit|--gitlab|--cache)
                     COMPREPLY=( $(compgen -f -- "$cur") )
                     return 0
                     ;;

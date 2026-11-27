@@ -51,6 +51,9 @@ python3 loophole.py scan ./src --html report.html
 # JUnit XML for CI dashboards (Jenkins, GitLab CI, Azure DevOps, CircleCI)
 python3 loophole.py scan ./src --junit report.xml
 
+# GitLab SAST report for the Security Dashboard / merge request widget
+python3 loophole.py scan ./src --gitlab gl-sast-report.json
+
 # adopt on an existing codebase: record today's findings as a baseline,
 # then fail CI only on NEW ones
 python3 loophole.py scan ./src --write-baseline baseline.json
@@ -201,7 +204,7 @@ fpath=(~/.zsh/completions $fpath)
 Both complete the `scan` subcommand, every `scan` flag, the
 `--severity` choices (`critical`, `high`, `medium`), file paths for
 the report/config options (`--json`, `--sarif`, `--html`, `--junit`,
-`--config`, `--baseline`, `--write-baseline`, `--cache`), rule IDs for
+`--gitlab`, `--config`, `--baseline`, `--write-baseline`, `--cache`), rule IDs for
 `--explain`, and files/directories for the scan target. The selftest
 suite checks that every flag in `loophole scan --help` appears in both
 files, so the completions cannot silently drift from the CLI.
@@ -473,6 +476,32 @@ results (Jenkins, GitLab CI, Azure DevOps, CircleCI): one
 `classname` set to the rule ID and `name` set to `path:line`, and a
 `<failure>` whose message includes the severity, rule ID and finding
 title. A clean scan emits an empty suite (`tests="0" failures="0"`).
+
+## GitLab SAST report
+
+```bash
+python3 loophole.py scan ./src --gitlab gl-sast-report.json
+```
+
+Produces a GitLab SAST report (schema 15.x) for the Security
+Dashboard and the merge request widget: one `vulnerability` per
+finding, with a stable `id` (a hash of rule + file + snippet, so the
+same finding keeps the same id across scans), `category: "sast"`,
+`severity` mapped from Loophole's `critical`/`high`/`medium` onto
+GitLab's `Critical`/`High`/`Medium`, the rule id in `identifiers`
+(with a link to the rule docs), and `location` (`file`,
+`start_line`). A clean scan emits an empty `vulnerabilities` list.
+Wire it into `.gitlab-ci.yml`:
+
+```yaml
+loophole:
+  image: python:3.12-slim
+  script:
+    - python3 loophole.py scan ./src --gitlab gl-sast-report.json
+  artifacts:
+    reports:
+      sast: gl-sast-report.json
+```
 
 ## Project layout
 
