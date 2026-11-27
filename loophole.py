@@ -3208,19 +3208,36 @@ def load_config(explicit_path, root):
               file=sys.stderr)
         return {}
     cfg = {"exclude": [], "disable": set(), "severity": {}}
-    if isinstance(data.get("exclude"), list):
+    if "exclude" in data and not isinstance(data["exclude"], list):
+        print(f"loophole: warning: config {path}: ignoring invalid "
+              f"exclude {data['exclude']!r} (expected a list)",
+              file=sys.stderr)
+    elif isinstance(data.get("exclude"), list):
         cfg["exclude"] = [str(x) for x in data["exclude"]]
-    if isinstance(data.get("disable"), list):
+    if "disable" in data and not isinstance(data["disable"], list):
+        print(f"loophole: warning: config {path}: ignoring invalid "
+              f"disable {data['disable']!r} (expected a list)",
+              file=sys.stderr)
+    elif isinstance(data.get("disable"), list):
         cfg["disable"] = {str(x).upper() for x in data["disable"]}
-    if isinstance(data.get("severity"), dict):
+    if "severity" in data and not isinstance(data["severity"], dict):
+        print(f"loophole: warning: config {path}: ignoring invalid "
+              f"severity {data['severity']!r} (expected an object)",
+              file=sys.stderr)
+    elif isinstance(data.get("severity"), dict):
+        known = {r for r, _, _ in RULES}
         for rid, level in data["severity"].items():
+            rule = str(rid).upper()
             norm = str(level).strip().lower()
-            if norm in SEV_ORDER:
-                cfg["severity"][str(rid).upper()] = norm
+            if rule not in known:
+                print(f"loophole: warning: config {path}: ignoring "
+                      f"unknown rule {rule}", file=sys.stderr)
+            elif norm in SEV_ORDER:
+                cfg["severity"][rule] = norm
             else:
                 print(f"loophole: warning: config {path}: ignoring "
                       f"invalid severity {level!r} for rule "
-                      f"{str(rid).upper()} (choose from critical, high, "
+                      f"{rule} (choose from critical, high, "
                       f"medium)", file=sys.stderr)
     return cfg
 
