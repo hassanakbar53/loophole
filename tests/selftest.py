@@ -5,6 +5,7 @@ Run:  python3 tests/selftest.py
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -154,6 +155,68 @@ class TestFixtures(unittest.TestCase):
             capture_output=True, text=True, cwd=ROOT)
         self.assertEqual(proc.returncode, 0)
         self.assertIn("62 rules total", proc.stdout)
+
+    def test_explain_every_rule(self):
+        """--explain works for every ID from --rules: non-empty
+        description and fix text for each, exit 0."""
+        proc = subprocess.run(
+            [sys.executable, SCANNER, "scan", "--rules", "."],
+            capture_output=True, text=True, cwd=ROOT)
+        self.assertEqual(proc.returncode, 0)
+        ids = sorted(set(re.findall(r"\b[A-Z]+\d{3}\b", proc.stdout)))
+        self.assertEqual(len(ids), 62,
+                         "--rules should list 62 rule IDs")
+        for rid in ids:
+            with self.subTest(rule=rid):
+                proc = subprocess.run(
+                    [sys.executable, SCANNER, "scan", "--explain", rid],
+                    capture_output=True, text=True, cwd=ROOT)
+                self.assertEqual(
+                    proc.returncode, 0,
+                    f"--explain {rid} failed: {proc.stderr}")
+                self.assertIn(rid, proc.stdout)
+                self.assertIn("Languages:", proc.stdout)
+                self.assertIn("Severity:", proc.stdout)
+                why = [ln for ln in proc.stdout.splitlines()
+                       if ln.strip().startswith("Why:")]
+                fix = [ln for ln in proc.stdout.splitlines()
+                       if ln.strip().startswith("Fix:")]
+                self.assertTrue(why,
+                                f"--explain {rid} printed no Why line")
+                self.assertTrue(fix,
+                                f"--explain {rid} printed no Fix line")
+                self.assertTrue(
+                    all(ln.split("Why:", 1)[1].strip() for ln in why),
+                    f"--explain {rid} has an empty description")
+                self.assertTrue(
+                    all(ln.split("Fix:", 1)[1].strip() for ln in fix),
+                    f"--explain {rid} has empty fix guidance")
+
+    def test_explain_unknown_rule(self):
+        """An unknown rule ID fails with exit 2 and a clean stderr
+        message (no traceback)."""
+        proc = subprocess.run(
+            [sys.executable, SCANNER, "scan", "--explain", "NOPE123"],
+            capture_output=True, text=True, cwd=ROOT)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("unknown rule", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+
+    def test_explain_close_match_and_case(self):
+        """Rule IDs match case-insensitively, and a near-miss suggests
+        the closest valid IDs."""
+        proc = subprocess.run(
+            [sys.executable, SCANNER, "scan", "--explain", "sec001"],
+            capture_output=True, text=True, cwd=ROOT)
+        self.assertEqual(proc.returncode, 0,
+                         "IDs should match case-insensitively")
+        self.assertIn("SEC001", proc.stdout)
+        proc = subprocess.run(
+            [sys.executable, SCANNER, "scan", "--explain", "SEC01"],
+            capture_output=True, text=True, cwd=ROOT)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("SEC001", proc.stderr,
+                      "close matches should be suggested")
 
     def test_no_rule_crashes(self):
         """Every rule function must run without raising (regression net for
