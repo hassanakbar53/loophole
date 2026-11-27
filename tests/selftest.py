@@ -232,6 +232,8 @@ EXPECTED = {
                    "REDOS001", "LOG001", "ZIP001", "TLS002", "CRY005",
                    "LDAP001", "CSRF001", "HDR001"},
     "ts_vuln.ts": {"SQLI001", "SSRF001", "PATH001", "PATH002", "HDR001"},
+    "ts_vuln.mts": {"SQLI001", "SSRF001", "PATH001", "PATH002", "HDR001"},
+    "ts_vuln.cts": {"SQLI001", "SSRF001", "PATH001", "PATH002", "HDR001"},
     "py_vuln.py": {"SEC002", "SQLI002", "CMD002", "SSRF001", "TLS001",
                    "PATH001", "EVAL001", "RAND002", "CRY001", "CRY002",
                    "AUTH001", "DBG001",
@@ -256,7 +258,10 @@ EXPECTED = {
     "v2_vuln.go": {"SSTI001", "CORS002", "CMP001"},
 }
 
-CLEAN = ["js_clean.js", "ts_clean.ts", "py_clean.py", "go_clean.go",
+# Same rules must fire for the alternate extensions as for their .php counterpart.
+EXPECTED["php_vuln.phtml"] = EXPECTED["php_vuln.php"]
+
+CLEAN = ["js_clean.js", "ts_clean.ts", "ts_clean.mts", "php_clean.phtml", "py_clean.py", "go_clean.go",
          "php_clean.php", "all_clean.js", "v2_clean.js", "v2_clean.py",
          "v2_clean.php", "v2_clean.go"]
 
