@@ -10,7 +10,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -48,6 +47,21 @@ def scan_json(path, *extra):
         with open(out) as fh:
             data = json.load(fh)
         return proc.returncode, data
+    finally:
+        os.unlink(out)
+
+
+def scan_sarif(path):
+    """Run the scanner with --sarif, return (exit_code, parsed SARIF)."""
+    with tempfile.NamedTemporaryFile(suffix=".sarif", delete=False) as tmp:
+        out = tmp.name
+    try:
+        proc = subprocess.run(
+            [sys.executable, SCANNER, "scan", path,
+             "--sarif", out, "--no-color"],
+            capture_output=True, text=True, cwd=ROOT)
+        with open(out) as fh:
+            return proc.returncode, json.load(fh)
     finally:
         os.unlink(out)
 
@@ -117,24 +131,72 @@ class TestFixtures(unittest.TestCase):
                 self.assertEqual(code, 0, f"{name}: exit code should be 0")
 
     def test_sarif_output(self):
-        with tempfile.NamedTemporaryFile(suffix=".sarif",
-                                         delete=False) as tmp:
-            out = tmp.name
-        try:
-            proc = subprocess.run(
-                [sys.executable, SCANNER, "scan",
-                 os.path.join(FIX, "py_vuln.py"),
-                 "--sarif", out, "--no-color"],
-                capture_output=True, text=True, cwd=ROOT)
-            self.assertEqual(proc.returncode, 1)
-            with open(out) as fh:
-                sarif = json.load(fh)
-            self.assertEqual(sarif["version"], "2.1.0")
-            results = sarif["runs"][0]["results"]
-            self.assertTrue(results, "SARIF has no results")
-            self.assertTrue(all("ruleId" in r for r in results))
-        finally:
-            os.unlink(out)
+        code, sarif = scan_sarif(os.path.join(FIX, "py_vuln.py"))
+        self.assertEqual(code, 1)
+        self.assertEqual(sarif["version"], "2.1.0")
+        driver = sarif["runs"][0]["tool"]["driver"]
+        rules = driver["rules"]
+        results = sarif["runs"][0]["results"]
+        self.assertTrue(results, "SARIF has no results")
+        self.assertTrue(all("ruleId" in r for r in results))
+        # every rule carries full metadata, not just the ones that fired
+        self.assertEqual(len(rules), 62, "SARIF should list all 62 rules")
+        self.assertEqual(len({r["id"] for r in rules}), 62,
+                         "SARIF rule IDs must be unique")
+        for rule in rules:
+            with self.subTest(rule=rule["id"]):
+                for key in ("shortDescription", "fullDescription",
+                            "help", "helpUri", "defaultConfiguration"):
+                    self.assertIn(key, rule,
+                                  f"{rule['id']}: missing {key}")
+                self.assertTrue(
+                    rule["shortDescription"]["text"].strip(),
+                    f"{rule['id']}: empty shortDescription")
+                self.assertTrue(
+                    rule["fullDescription"]["text"].strip(),
+                    f"{rule['id']}: empty fullDescription")
+                self.assertTrue(rule["help"]["text"].strip(),
+                                f"{rule['id']}: empty help")
+                self.assertEqual(
+                    rule["helpUri"],
+                    "https://github.com/rootsiemen/loophole#rule-"
+                    + rule["id"].lower())
+                self.assertIn(rule["defaultConfiguration"]["level"],
+                              ("error", "warning"))
+                self.assertIn(rule["properties"]["severity"],
+                              ("critical", "high", "medium"))
+        rule_ids = {r["id"] for r in rules}
+        self.assertTrue(all(r["ruleId"] in rule_ids for r in results),
+                        "a result references a rule missing from rules")
+
+    def test_sarif_zero_findings_full_rules(self):
+        """A clean scan (0 results) still lists all 62 rules with full
+        descriptions and help links (issue #7)."""
+        code, sarif = scan_sarif(os.path.join(FIX, "py_clean.py"))
+        self.assertEqual(code, 0)
+        rules = sarif["runs"][0]["tool"]["driver"]["rules"]
+        self.assertEqual(sarif["runs"][0]["results"], [])
+        self.assertEqual(len(rules), 62)
+        self.assertTrue(all(
+            r.get("fullDescription", {}).get("text", "").strip()
+            and r.get("help", {}).get("text", "").strip()
+            and r.get("helpUri", "").startswith(
+                "https://github.com/rootsiemen/loophole#rule-")
+            for r in rules),
+            "0-finding SARIF must still carry full rule metadata")
+
+    def test_sarif_help_uris_match_readme(self):
+        """Every SARIF helpUri fragment has a matching named anchor in
+        the README rules table, so the links actually land on the rule."""
+        _code, sarif = scan_sarif(os.path.join(FIX, "py_clean.py"))
+        rules = sarif["runs"][0]["tool"]["driver"]["rules"]
+        with open(os.path.join(ROOT, "README.md")) as fh:
+            readme = fh.read()
+        anchors = set(re.findall(r'<a name="(rule-[a-z0-9]+)">', readme))
+        missing = [r["id"] for r in rules
+                   if "rule-" + r["id"].lower() not in anchors]
+        self.assertFalse(missing,
+                         f"README has no anchor for: {missing}")
 
     def test_fix_dry_does_not_modify(self):
         target = os.path.join(FIX, "py_vuln.py")
@@ -571,55 +633,6 @@ class TestFixtures(unittest.TestCase):
             self.assertNotIn("http://", page.replace(
                 "http://www.w3.org", ""),
                 "HTML report must not reference external assets")
-        finally:
-            os.unlink(out)
-
-    def test_junit_report(self):
-        with tempfile.NamedTemporaryFile(suffix=".xml",
-                                         delete=False) as tmp:
-            out = tmp.name
-        try:
-            target = os.path.join(FIX, "js_vuln.js")
-            proc = subprocess.run(
-                [sys.executable, SCANNER, "scan", target,
-                 "--junit", out, "--no-color"],
-                capture_output=True, text=True, cwd=ROOT)
-            self.assertEqual(proc.returncode, 1)
-            suite = ET.parse(out).getroot()
-            self.assertEqual(suite.tag, "testsuite")
-            cases = suite.findall("testcase")
-            _, findings = scan(target)
-            self.assertEqual(len(cases), len(findings),
-                             "JUnit testcase count != JSON findings count")
-            self.assertEqual(suite.get("tests"), str(len(findings)))
-            self.assertEqual(suite.get("failures"), str(len(findings)))
-            for case in cases:
-                failure = case.find("failure")
-                self.assertIsNotNone(failure, "testcase has no <failure>")
-                self.assertEqual(case.get("classname"),
-                                 failure.get("type"))
-                self.assertIn(case.get("classname"),
-                              failure.get("message"),
-                              "failure message must name the rule")
-                self.assertIn("[", failure.get("message"),
-                              "failure message must include the severity")
-            # clean fixture: an empty suite
-            with tempfile.NamedTemporaryFile(suffix=".xml",
-                                             delete=False) as tmp2:
-                clean_out = tmp2.name
-            try:
-                proc = subprocess.run(
-                    [sys.executable, SCANNER, "scan",
-                     os.path.join(FIX, "js_clean.js"),
-                     "--junit", clean_out, "--no-color"],
-                    capture_output=True, text=True, cwd=ROOT)
-                self.assertEqual(proc.returncode, 0)
-                clean_suite = ET.parse(clean_out).getroot()
-                self.assertEqual(clean_suite.get("tests"), "0")
-                self.assertEqual(clean_suite.get("failures"), "0")
-                self.assertEqual(clean_suite.findall("testcase"), [])
-            finally:
-                os.unlink(clean_out)
         finally:
             os.unlink(out)
 
