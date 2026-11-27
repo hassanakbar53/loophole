@@ -4,6 +4,7 @@
 Run:  python3 tests/selftest.py
 """
 import hashlib
+import copy
 import json
 import os
 import re
@@ -105,6 +106,120 @@ def scan_gitlab(path):
             return proc.returncode, json.load(fh)
     finally:
         os.unlink(out)
+# SARIF level values (SARIF 2.1.0, section 3.27.9). write_sarif only
+# emits "error" and "warning", but any of these is structurally valid.
+SARIF_LEVELS = {"error", "warning", "note", "none"}
+
+
+def validate_sarif(sarif, testcase):
+    """Hand-rolled SARIF 2.1.0 structural validation (issue #50).
+
+    No jsonschema package — plain assertions, per the project's
+    zero-dependency rule. Raises AssertionError on the first defect.
+    Returns the set of rule IDs that produced a result.
+    """
+    # the document round-trips through JSON and carries $schema/version
+    testcase.assertEqual(json.loads(json.dumps(sarif)), sarif,
+                         "SARIF document does not round-trip through JSON")
+    testcase.assertEqual(
+        sarif.get("$schema"),
+        "https://json.schemastore.org/sarif-2.1.0.json",
+        "SARIF $schema is missing or wrong")
+    testcase.assertEqual(sarif.get("version"), "2.1.0",
+                         "SARIF version is not 2.1.0")
+    runs = sarif.get("runs")
+    testcase.assertIsInstance(runs, list, "SARIF runs is not a list")
+    testcase.assertEqual(len(runs), 1, "SARIF must have exactly one run")
+    run = runs[0]
+    driver = run["tool"]["driver"]
+    testcase.assertEqual(driver.get("name"), "Loophole",
+                         "SARIF driver name is not Loophole")
+    version = driver.get("version")
+    testcase.assertIsInstance(version, str, "SARIF driver version is not a string")
+    testcase.assertTrue(version.strip(), "SARIF driver version is empty")
+    rules = driver.get("rules")
+    testcase.assertIsInstance(rules, list, "SARIF driver rules is not a list")
+    testcase.assertTrue(rules, "SARIF driver rules is empty")
+    rule_ids = [r["id"] for r in rules]
+    testcase.assertEqual(len(rule_ids), len(set(rule_ids)),
+                         "SARIF driver rule IDs are not unique")
+    rule_by_id = {r["id"]: r for r in rules}
+    results = run.get("results")
+    testcase.assertIsInstance(results, list, "SARIF results is not a list")
+    testcase.assertTrue(results, "SARIF scan produced no results")
+    fired = {r["ruleId"] for r in results}
+    testcase.assertTrue(
+        fired <= set(rule_ids),
+        "a result references a rule missing from driver rules: "
+        f"{sorted(fired - set(rule_ids))}")
+    # every rule that fired carries full metadata on its driver entry
+    for rid in sorted(fired):
+        entry = rule_by_id[rid]
+        for key in ("shortDescription", "fullDescription",
+                    "help", "helpUri", "defaultConfiguration"):
+            testcase.assertIn(key, entry,
+                              f"firing rule {rid}: missing {key}")
+            if key in ("shortDescription", "fullDescription", "help"):
+                testcase.assertTrue(entry[key]["text"].strip(),
+                                    f"firing rule {rid}: empty {key}")
+    # per-result checks, with regions bounded by the scanned files
+    file_lines = {}
+    for result in results:
+        testcase.assertIn(result.get("level"), SARIF_LEVELS,
+                          f"{result.get('ruleId')}: invalid SARIF level "
+                          f"{result.get('level')!r}")
+        message = result.get("message", {}).get("text", "")
+        testcase.assertIsInstance(message, str,
+                                  f"{result.get('ruleId')}: message is not text")
+        testcase.assertTrue(message.strip(),
+                            f"{result.get('ruleId')}: empty result message")
+        locations = result.get("locations")
+        testcase.assertIsInstance(locations, list,
+                                  f"{result.get('ruleId')}: locations is not a list")
+        testcase.assertTrue(locations,
+                            f"{result.get('ruleId')}: result has no locations")
+        for loc in locations:
+            phys = loc["physicalLocation"]
+            uri = phys["artifactLocation"]["uri"]
+            testcase.assertTrue(uri, "SARIF location has an empty uri")
+            if uri not in file_lines:
+                with open(uri, encoding="utf-8", errors="replace") as fh:
+                    file_lines[uri] = fh.read().splitlines()
+            lines = file_lines[uri]
+            region = phys["region"]
+            start_line = region.get("startLine")
+            testcase.assertIsInstance(start_line, int,
+                                      f"{uri}: startLine is not an integer")
+            testcase.assertGreaterEqual(start_line, 1,
+                                        f"{uri}: startLine {start_line} < 1")
+            testcase.assertLessEqual(
+                start_line, len(lines),
+                f"{uri}: startLine {start_line} is past end of file "
+                f"({len(lines)} lines)")
+            if "startColumn" in region:
+                column = region["startColumn"]
+                testcase.assertIsInstance(column, int,
+                                          f"{uri}: startColumn is not an integer")
+                testcase.assertGreaterEqual(column, 1,
+                                            f"{uri}: startColumn {column} < 1")
+                testcase.assertLessEqual(
+                    column, len(lines[start_line - 1]) + 1,
+                    f"{uri}:{start_line}: startColumn {column} is past "
+                    f"end of line")
+            if "endLine" in region:
+                testcase.assertGreaterEqual(region["endLine"], start_line,
+                                            f"{uri}: endLine < startLine")
+                testcase.assertLessEqual(region["endLine"], len(lines),
+                                         f"{uri}: endLine is past end of file")
+            snippet = region.get("snippet", {}).get("text")
+            if snippet is not None:
+                testcase.assertTrue(snippet.strip(),
+                                    f"{uri}:{start_line}: empty snippet")
+                testcase.assertEqual(
+                    snippet.strip(), lines[start_line - 1].strip(),
+                    f"{uri}:{start_line}: snippet does not match the "
+                    f"source line")
+    return fired
 
 
 # rule -> fixtures that must trigger it (subset assertion: each listed rule
@@ -209,6 +324,72 @@ class TestFixtures(unittest.TestCase):
         rule_ids = {r["id"] for r in rules}
         self.assertTrue(all(r["ruleId"] in rule_ids for r in results),
                         "a result references a rule missing from rules")
+
+    def test_sarif_structure_validation(self):
+        """Issue #50: write_sarif output is structurally valid SARIF
+        2.1.0 — driver metadata, unique rules covering every firing
+        rule, valid levels and messages, and regions inside the scanned
+        files' bounds — checked over a multi-language fixture scan."""
+        fixtures = ["py_vuln.py", "js_vuln.js", "ts_vuln.ts",
+                    "go_vuln.go", "php_vuln.php"]
+        all_fired = set()
+        for name in fixtures:
+            with self.subTest(fixture=name):
+                code, sarif = scan_sarif(os.path.join(FIX, name))
+                self.assertEqual(code, 1,
+                                 f"{name}: SARIF scan should exit 1")
+                all_fired |= validate_sarif(sarif, self)
+        families = {rid.rstrip("0123456789") for rid in all_fired}
+        self.assertGreaterEqual(
+            len(all_fired), 40,
+            "multi-language SARIF scan fired too few rules: "
+            f"{sorted(all_fired)}")
+        self.assertGreaterEqual(
+            len(families), 10,
+            "multi-language SARIF scan covered too few rule families: "
+            f"{sorted(families)}")
+
+    def test_sarif_structure_validation_rejects_broken(self):
+        """Issue #50: the structural validator is load-bearing — it must
+        reject a SARIF document with a required field removed."""
+        _code, sarif = scan_sarif(os.path.join(FIX, "py_vuln.py"))
+        fired = {r["ruleId"] for r in sarif["runs"][0]["results"]}
+        first_fired = sorted(fired)[0]
+
+        bad_docs = []
+
+        doc = copy.deepcopy(sarif)
+        doc.pop("$schema")
+        bad_docs.append(("missing $schema", doc))
+
+        doc = copy.deepcopy(sarif)
+        doc["runs"][0]["results"][0]["message"] = {"text": ""}
+        bad_docs.append(("empty result message", doc))
+
+        doc = copy.deepcopy(sarif)
+        doc["runs"][0]["results"][0]["level"] = "fatal"
+        bad_docs.append(("invalid result level", doc))
+
+        doc = copy.deepcopy(sarif)
+        doc["runs"][0]["results"][0]["locations"][0][
+            "physicalLocation"]["region"]["startLine"] = 99999
+        bad_docs.append(("startLine past end of file", doc))
+
+        doc = copy.deepcopy(sarif)
+        doc["runs"][0]["tool"]["driver"]["rules"] = [
+            r for r in doc["runs"][0]["tool"]["driver"]["rules"]
+            if r["id"] != first_fired]
+        bad_docs.append(("driver rules missing a firing rule", doc))
+
+        doc = copy.deepcopy(sarif)
+        doc["runs"][0]["tool"]["driver"]["rules"].append(
+            copy.deepcopy(doc["runs"][0]["tool"]["driver"]["rules"][0]))
+        bad_docs.append(("duplicate rule id in driver rules", doc))
+
+        for label, doc in bad_docs:
+            with self.subTest(case=label):
+                with self.assertRaises(AssertionError):
+                    validate_sarif(doc, self)
 
     def test_sarif_zero_findings_full_rules(self):
         """A clean scan (0 results) still lists all 62 rules with full
