@@ -390,6 +390,80 @@ class TestFixtures(unittest.TestCase):
             os.unlink(out)
 
 
+class TestPrecommit(unittest.TestCase):
+    """pre-commit hook (issue #53): the hooks file parses, the hook
+    entry is executable, and the entry fails on vulnerable fixtures
+    while passing clean ones. This is the local simulation of
+    `pre-commit try-repo . loophole --files <fixture>`, since pre-commit
+    itself is a dev-side tool and is not installed in CI."""
+
+    HOOKS_FILE = os.path.join(ROOT, ".pre-commit-hooks.yaml")
+    ENTRY = os.path.join(ROOT, "scripts", "loophole-pre-commit.sh")
+
+    def test_hooks_yaml_parses(self):
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("PyYAML not installed; cannot parse YAML")
+        with open(self.HOOKS_FILE) as fh:
+            data = yaml.safe_load(fh)
+        self.assertIsInstance(data, list)
+        self.assertEqual(len(data), 1)
+        hook = data[0]
+        self.assertEqual(hook["id"], "loophole")
+        self.assertEqual(hook["name"], "Loophole security scan")
+        self.assertEqual(hook["language"], "script")
+        self.assertEqual(hook["entry"], "scripts/loophole-pre-commit.sh")
+        for tag in ("javascript", "jsx", "ts", "tsx", "python", "go",
+                    "php"):
+            self.assertIn(tag, hook["types_or"],
+                          f"types_or is missing {tag}")
+
+    def test_hooks_yaml_structure_without_yaml(self):
+        """The hook definition is present even where PyYAML is missing."""
+        with open(self.HOOKS_FILE) as fh:
+            text = fh.read()
+        for needle in ("id: loophole", "name: Loophole security scan",
+                       "entry: scripts/loophole-pre-commit.sh",
+                       "language: script", "types_or:"):
+            self.assertIn(needle, text)
+
+    def test_hook_entry_is_executable(self):
+        self.assertTrue(os.path.isfile(self.ENTRY),
+                        "hook entry script is missing")
+        self.assertTrue(os.access(self.ENTRY, os.X_OK),
+                        "hook entry must be executable")
+
+    def _run_hook(self, *files):
+        proc = subprocess.run([self.ENTRY] + list(files),
+                              capture_output=True, text=True, cwd=ROOT)
+        return proc
+
+    def test_hook_fails_on_vulnerable_fixture(self):
+        proc = self._run_hook(os.path.join(FIX, "py_vuln.py"))
+        self.assertEqual(proc.returncode, 1,
+                         "hook should fail on py_vuln.py:\n" + proc.stdout)
+
+    def test_hook_passes_on_clean_fixture(self):
+        proc = self._run_hook(os.path.join(FIX, "py_clean.py"))
+        self.assertEqual(proc.returncode, 0,
+                         "hook should pass on py_clean.py:\n" + proc.stdout)
+
+    def test_hook_scans_each_staged_file(self):
+        """Several staged files in one invocation: the hook scans each
+        one instead of failing with an argparse error (the scanner takes
+        a single path)."""
+        proc = self._run_hook(os.path.join(FIX, "py_clean.py"),
+                              os.path.join(FIX, "py_vuln.py"))
+        self.assertEqual(proc.returncode, 1,
+                         "hook should fail when any file is vulnerable")
+        proc = self._run_hook(os.path.join(FIX, "py_clean.py"),
+                              os.path.join(FIX, "js_clean.js"))
+        self.assertEqual(proc.returncode, 0,
+                         "hook should pass when every file is clean:\n"
+                         + proc.stdout)
+
+
 class TestCache(unittest.TestCase):
     """--cache: cold cache, warm cache, invalidation on file change,
     stale-version fallback, and baseline filtering after retrieval."""
