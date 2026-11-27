@@ -48,6 +48,9 @@ python3 loophole.py scan ./src --sarif results.sarif
 # self-contained HTML report (inline CSS, no external assets)
 python3 loophole.py scan ./src --html report.html
 
+# JUnit XML for CI dashboards (Jenkins, GitLab CI, Azure DevOps, CircleCI)
+python3 loophole.py scan ./src --junit report.xml
+
 # adopt on an existing codebase: record today's findings as a baseline,
 # then fail CI only on NEW ones
 python3 loophole.py scan ./src --write-baseline baseline.json
@@ -88,7 +91,7 @@ docker run --rm -v "$PWD:/src" loophole scan /src/tests/fixtures/py_vuln.py
 docker run --rm -v "$PWD:/src" loophole scan /src --json /src/report.json
 ```
 
-Note: with `--json`, `--sarif` or `--html`, write the report to a
+Note: with `--json`, `--sarif`, `--html` or `--junit`, write the report to a
 path under `/src` so the file lands in your mounted directory.
 
 
@@ -388,6 +391,19 @@ python3 loophole.py scan ./src --html report.html
 Produces a single self-contained HTML file — inline CSS, no external
 assets, works offline — with findings grouped by severity, each with
 file/line, the code snippet, why it matters and the fix.
+
+## JUnit report
+
+```bash
+python3 loophole.py scan ./src --junit report.xml
+```
+
+Produces a JUnit XML report for CI systems that ingest test-style
+results (Jenkins, GitLab CI, Azure DevOps, CircleCI): one
+`<testsuite>` for the scan, one `<testcase>` per finding with
+`classname` set to the rule ID and `name` set to `path:line`, and a
+`<failure>` whose message includes the severity, rule ID and finding
+title. A clean scan emits an empty suite (`tests="0" failures="0"`).
 
 ## Project layout
 
