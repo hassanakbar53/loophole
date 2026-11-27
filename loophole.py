@@ -46,6 +46,15 @@ import xml.etree.ElementTree as ET
 
 VERSION = "1.2.0"
 
+# Home of the rule docs: the README rules table carries one named anchor
+# per rule (<a name="rule-sec001">), so every rule links to its own row.
+RULE_DOC_URL = "https://github.com/rootsiemen/loophole"
+
+
+def rule_help_uri(rule_id):
+    """Doc URL for one rule, e.g. .../loophole#rule-cry002."""
+    return f"{RULE_DOC_URL}#rule-{rule_id.lower()}"
+
 # ---------------------------------------------------------------------------
 # Finding model
 # ---------------------------------------------------------------------------
@@ -3025,19 +3034,29 @@ class _RuleMetaVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def _extract_rule_meta(func, rule_id):
-    """Variants of one rule function, in source order.
+_ALL_RULE_META = None
 
-    Returns a list of {severity, title, why, fix} dicts read from the
-    ctx.hit() / regex_rule() calls inside the function, or [] when
-    nothing could be extracted. Only hits for this rule's own ID are
-    kept.
+
+def _load_all_rule_meta():
+    """Metadata variants for every rule in RULES, parsed once.
+
+    Returns {rule_id: [{severity, title, why, fix}, ...]} in source
+    order. The rule functions stay the single source of truth — the
+    literals are re-read from this file's AST — but the file is parsed
+    a single time and the result cached, so emitting SARIF (which needs
+    all 62 rules, fired or not) stays fast. Returns {} when the file
+    cannot be read.
     """
+    global _ALL_RULE_META
+    if _ALL_RULE_META is not None:
+        return _ALL_RULE_META
+    meta = {}
     try:
         with open(__file__, encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
     except OSError:
-        return []
+        _ALL_RULE_META = meta
+        return meta
     consts = {}
     for node in tree.body:
         if isinstance(node, ast.Assign) and len(node.targets) == 1 \
@@ -3045,13 +3064,30 @@ def _extract_rule_meta(func, rule_id):
             val = _static_str(node.value, consts, {})
             if val is not None:
                 consts[node.targets[0].id] = val
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == func.__name__:
-            visitor = _RuleMetaVisitor(consts, rule_id)
-            for stmt in node.body:
-                visitor.visit(stmt)
-            return visitor.variants
-    return []
+    funcs = {node.name: node for node in tree.body
+             if isinstance(node, ast.FunctionDef)}
+    for rule_id, _langs, func in RULES:
+        node = funcs.get(func.__name__)
+        if node is None:
+            continue
+        visitor = _RuleMetaVisitor(consts, rule_id)
+        for stmt in node.body:
+            visitor.visit(stmt)
+        if visitor.variants:
+            meta[rule_id] = visitor.variants
+    _ALL_RULE_META = meta
+    return meta
+
+
+def _extract_rule_meta(func, rule_id):
+    """Variants of one rule function, in source order.
+
+    Returns a list of {severity, title, why, fix} dicts read from the
+    ctx.hit() / regex_rule() calls inside the function, or [] when
+    nothing could be extracted. Only hits for this rule's own ID are
+    kept. Backed by the single-parse cache in _load_all_rule_meta().
+    """
+    return list(_load_all_rule_meta().get(rule_id, []))
 
 
 def get_rule_info(rule_id):
@@ -3511,26 +3547,43 @@ def write_json(findings, out_path, ignored=0, cached=0):
     return out_path
 
 
+_SARIF_LEVEL = {"critical": "error", "high": "error", "medium": "warning"}
+
+
 def write_sarif(findings, out_path):
+    """SARIF 2.1.0 report.
+
+    The `rules` array carries full metadata for EVERY rule in RULES —
+    shortDescription, fullDescription (why), help (fix), helpUri and
+    defaultConfiguration — even when a scan finds nothing, so code
+    scanning always shows a complete rule card. The rule functions
+    stay the single source of truth: metadata is re-read from their
+    own literals via _load_all_rule_meta(). Multi-variant rules (e.g.
+    DESER001, XSS005) use their first variant for the rule card; each
+    individual result still carries its own variant's title and fix
+    in its message text.
+    """
+    meta = _load_all_rule_meta()
     rules = []
-    seen = set()
-    for _rid, _langs, _fn in RULES:
-        seen.add(_rid)
-    # rule metadata is embedded in findings; build a static index instead
-    for f in findings:
-        if f.rule_id not in [r["id"] for r in rules]:
-            rules.append({
-                "id": f.rule_id,
-                "name": f.title,
-                "shortDescription": {"text": f.title},
-                "fullDescription": {"text": f.why},
-                "help": {"text": f.fix},
-                "properties": {"severity": f.severity},
-            })
-    for rid in sorted(seen - {r["id"] for r in rules}):
-        rules.append({"id": rid, "name": rid,
-                      "shortDescription": {"text": rid}})
-    level = {"critical": "error", "high": "error", "medium": "warning"}
+    for rid, _langs, _fn in RULES:
+        variants = meta.get(rid, [])
+        entry = {"id": rid, "helpUri": rule_help_uri(rid)}
+        if variants:
+            first = variants[0]
+            entry["name"] = first["title"]
+            entry["shortDescription"] = {"text": first["title"]}
+            entry["fullDescription"] = {"text": first["why"]}
+            entry["help"] = {"text": first["fix"]}
+            entry["defaultConfiguration"] = {
+                "level": _SARIF_LEVEL[first["severity"]]}
+            entry["properties"] = {"severity": first["severity"]}
+        else:
+            # No metadata could be extracted for this rule; keep the
+            # bare stub (with its doc link) rather than dropping it.
+            entry["name"] = rid
+            entry["shortDescription"] = {"text": rid}
+        rules.append(entry)
+    level = _SARIF_LEVEL
     results = [{
         "ruleId": f.rule_id,
         "level": level[f.severity],
@@ -3550,7 +3603,7 @@ def write_sarif(findings, out_path):
             "tool": {"driver": {
                 "name": "Loophole",
                 "version": VERSION,
-                "informationUri": "https://github.com/rootsiemen/loophole",
+                "informationUri": RULE_DOC_URL,
                 "rules": rules,
             }},
             "results": results,

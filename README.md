@@ -196,68 +196,68 @@ Loophole found 3 issue(s): 1 critical, 2 high, 0 medium
 
 | ID | Severity | What it catches |
 |----|----------|-----------------|
-| SEC001 | high | Hardcoded API key / token / secret (pattern + length) |
-| SEC002 | high | Hardcoded password assignment |
-| SEC003 | critical | Private key material in source |
-| SEC004 | high | AWS access key ID (`AKIA…`) |
-| SEC005 | high | High-entropy secret-like string (Shannon entropy) |
-| SQLI001 | high | SQL string building — JS/TS (`"…"+`, template literals) |
-| SQLI002 | high | SQL string building — Python (f-strings, `%`, `.format`) |
-| SQLI003 | high | SQL string building — Go (`fmt.Sprintf`, concat) |
-| SQLI004 | high | SQL string building — PHP (`.` concat) |
-| XSS001 | high | Dynamic `innerHTML` / `outerHTML` assignment |
-| XSS002 | medium | Dynamic `document.write()` |
-| XSS003 | high | React `dangerouslySetInnerHTML` with dynamic value |
-| XSS004 | high | PHP `echo`/`<?=` of `$_GET`/`$_POST`/`$_COOKIE` |
-| CMD001 | critical | JS `child_process.exec/spawn` with dynamic command |
-| CMD002 | critical | Python `os.system` / `shell=True` with dynamic command |
-| CMD003 | critical | Go `exec.Command("sh","-c", …)` / tainted args |
-| CMD004 | critical | PHP `system/exec/shell_exec/passthru` with `$` input |
-| PATH001 | high | File operation on user-influenced path |
-| PATH002 | medium | `..` traversal combined with user input |
-| RAND001 | medium | `Math.random()` for tokens/secrets (JS) |
-| RAND002 | medium | `random` module for secrets (Python) |
-| RAND003 | medium | `math/rand` for secrets (Go; `crypto/rand` aware) |
-| CRY001 | high | MD5 for password hashing |
-| CRY002 | high | SHA-1 for password hashing |
-| CRY003 | high | DES / 3DES cipher use |
-| CRY004 | medium | Hardcoded IV |
-| EVAL001 | critical | `eval()` with dynamic input |
-| EVAL002 | high | `new Function()` with dynamic input |
-| SSRF001 | high | HTTP request URL built from user input |
-| AUTH001 | medium | Sensitive route without visible auth (heuristic) |
-| CORS001 | medium | Wildcard CORS (`Access-Control-Allow-Origin: *`) |
-| JWT001 | high | JWT decoded without verification (`jwt.decode`) |
-| TLS001 | high | Disabled TLS verification |
-| DBG001 | medium | Debug mode enabled (`debug=True`, `DEBUG = True`) |
-| ERR001 | medium | Stack traces / exception details sent to client |
-| PROTO001 | high | Prototype pollution via deep-merge of user input (JS/TS) |
-| DESER001 | high | Unsafe deserialization (`pickle`, `shelve`, `unserialize`, `yaml.load`) — PHP `unserialize()` on dynamic data of unknown origin is medium |
-| NOSQL001 | high | NoSQL injection — input flowing into MongoDB-style queries |
-| XXE001 | high | XML external entity — XML parsers without hardening |
-| REDIR001 | medium | Open redirect — target taken from user input |
-| ZIP001 | high | Zip Slip — archive extraction without path validation |
-| CSRF001 | medium | State-changing routes, no CSRF protection (app-level heuristic) |
-| UPL001 | high | File upload accepted without type validation |
-| REDOS001 | medium | ReDoS — regex with nested quantifiers |
-| JWT002 | high | JWT `none` algorithm / weak secret / verification disabled |
-| TLS002 | medium | Weak/outdated TLS versions (SSLv3, TLS 1.0/1.1) |
-| CRY005 | medium | ECB mode or zero/static IV |
-| LOG001 | medium | Sensitive data (passwords/tokens) written to logs |
-| LDAP001 | high | LDAP injection via unescaped input |
-| HDR001 | medium | Missing security headers (Express/Flask, app-level heuristic) |
-| SSTI001 | high | Server-side template injection — input used AS the template (EJS/Pug/Jinja2/Go templates/Twig) |
-| COOKIE001 | medium | Cookie set without HttpOnly, or the flag explicitly disabled |
-| RAND004 | medium | `rand()`/`mt_rand()`/`uniqid()` for tokens/secrets (PHP) |
-| TLS003 | high | TLS validation off via `CERT_NONE`, unverified contexts, `VERIFYHOST=0`, `NODE_TLS_REJECT_UNAUTHORIZED=0` |
-| TLS004 | high | Go `tls.Config{InsecureSkipVerify: true}` |
-| CORS002 | high | CORS reflects any request Origin, or credentials combined with a wildcard origin |
-| CRLF001 | medium | HTTP header injection — user-influenced value written into a response header |
-| CMP001 | medium | Secret/token compared with `==`/`===` instead of a constant-time compare |
-| REDIR002 | medium | DOM open redirect — `location` assigned from user input (JS/TS) |
-| XXE002 | high | XXE — libxmljs entity expansion enabled (`noent`/`dtdload`) |
-| XSS005 | high | `insertAdjacentHTML`, Vue `v-html`, Angular `bypassSecurityTrust*`, Go `template.HTML()` on dynamic values |
-| DESER002 | high | `jsonpickle.decode` (Python) / `v8.deserialize` (JS) on dynamic data |
+| <a name="rule-sec001"></a>SEC001 | high | Hardcoded API key / token / secret (pattern + length) |
+| <a name="rule-sec002"></a>SEC002 | high | Hardcoded password assignment |
+| <a name="rule-sec003"></a>SEC003 | critical | Private key material in source |
+| <a name="rule-sec004"></a>SEC004 | high | AWS access key ID (`AKIA…`) |
+| <a name="rule-sec005"></a>SEC005 | high | High-entropy secret-like string (Shannon entropy) |
+| <a name="rule-sqli001"></a>SQLI001 | high | SQL string building — JS/TS (`"…"+`, template literals) |
+| <a name="rule-sqli002"></a>SQLI002 | high | SQL string building — Python (f-strings, `%`, `.format`) |
+| <a name="rule-sqli003"></a>SQLI003 | high | SQL string building — Go (`fmt.Sprintf`, concat) |
+| <a name="rule-sqli004"></a>SQLI004 | high | SQL string building — PHP (`.` concat) |
+| <a name="rule-xss001"></a>XSS001 | high | Dynamic `innerHTML` / `outerHTML` assignment |
+| <a name="rule-xss002"></a>XSS002 | medium | Dynamic `document.write()` |
+| <a name="rule-xss003"></a>XSS003 | high | React `dangerouslySetInnerHTML` with dynamic value |
+| <a name="rule-xss004"></a>XSS004 | high | PHP `echo`/`<?=` of `$_GET`/`$_POST`/`$_COOKIE` |
+| <a name="rule-cmd001"></a>CMD001 | critical | JS `child_process.exec/spawn` with dynamic command |
+| <a name="rule-cmd002"></a>CMD002 | critical | Python `os.system` / `shell=True` with dynamic command |
+| <a name="rule-cmd003"></a>CMD003 | critical | Go `exec.Command("sh","-c", …)` / tainted args |
+| <a name="rule-cmd004"></a>CMD004 | critical | PHP `system/exec/shell_exec/passthru` with `$` input |
+| <a name="rule-path001"></a>PATH001 | high | File operation on user-influenced path |
+| <a name="rule-path002"></a>PATH002 | medium | `..` traversal combined with user input |
+| <a name="rule-rand001"></a>RAND001 | medium | `Math.random()` for tokens/secrets (JS) |
+| <a name="rule-rand002"></a>RAND002 | medium | `random` module for secrets (Python) |
+| <a name="rule-rand003"></a>RAND003 | medium | `math/rand` for secrets (Go; `crypto/rand` aware) |
+| <a name="rule-cry001"></a>CRY001 | high | MD5 for password hashing |
+| <a name="rule-cry002"></a>CRY002 | high | SHA-1 for password hashing |
+| <a name="rule-cry003"></a>CRY003 | high | DES / 3DES cipher use |
+| <a name="rule-cry004"></a>CRY004 | medium | Hardcoded IV |
+| <a name="rule-eval001"></a>EVAL001 | critical | `eval()` with dynamic input |
+| <a name="rule-eval002"></a>EVAL002 | high | `new Function()` with dynamic input |
+| <a name="rule-ssrf001"></a>SSRF001 | high | HTTP request URL built from user input |
+| <a name="rule-auth001"></a>AUTH001 | medium | Sensitive route without visible auth (heuristic) |
+| <a name="rule-cors001"></a>CORS001 | medium | Wildcard CORS (`Access-Control-Allow-Origin: *`) |
+| <a name="rule-jwt001"></a>JWT001 | high | JWT decoded without verification (`jwt.decode`) |
+| <a name="rule-tls001"></a>TLS001 | high | Disabled TLS verification |
+| <a name="rule-dbg001"></a>DBG001 | medium | Debug mode enabled (`debug=True`, `DEBUG = True`) |
+| <a name="rule-err001"></a>ERR001 | medium | Stack traces / exception details sent to client |
+| <a name="rule-proto001"></a>PROTO001 | high | Prototype pollution via deep-merge of user input (JS/TS) |
+| <a name="rule-deser001"></a>DESER001 | high | Unsafe deserialization (`pickle`, `shelve`, `unserialize`, `yaml.load`) — PHP `unserialize()` on dynamic data of unknown origin is medium |
+| <a name="rule-nosql001"></a>NOSQL001 | high | NoSQL injection — input flowing into MongoDB-style queries |
+| <a name="rule-xxe001"></a>XXE001 | high | XML external entity — XML parsers without hardening |
+| <a name="rule-redir001"></a>REDIR001 | medium | Open redirect — target taken from user input |
+| <a name="rule-zip001"></a>ZIP001 | high | Zip Slip — archive extraction without path validation |
+| <a name="rule-csrf001"></a>CSRF001 | medium | State-changing routes, no CSRF protection (app-level heuristic) |
+| <a name="rule-upl001"></a>UPL001 | high | File upload accepted without type validation |
+| <a name="rule-redos001"></a>REDOS001 | medium | ReDoS — regex with nested quantifiers |
+| <a name="rule-jwt002"></a>JWT002 | high | JWT `none` algorithm / weak secret / verification disabled |
+| <a name="rule-tls002"></a>TLS002 | medium | Weak/outdated TLS versions (SSLv3, TLS 1.0/1.1) |
+| <a name="rule-cry005"></a>CRY005 | medium | ECB mode or zero/static IV |
+| <a name="rule-log001"></a>LOG001 | medium | Sensitive data (passwords/tokens) written to logs |
+| <a name="rule-ldap001"></a>LDAP001 | high | LDAP injection via unescaped input |
+| <a name="rule-hdr001"></a>HDR001 | medium | Missing security headers (Express/Flask, app-level heuristic) |
+| <a name="rule-ssti001"></a>SSTI001 | high | Server-side template injection — input used AS the template (EJS/Pug/Jinja2/Go templates/Twig) |
+| <a name="rule-cookie001"></a>COOKIE001 | medium | Cookie set without HttpOnly, or the flag explicitly disabled |
+| <a name="rule-rand004"></a>RAND004 | medium | `rand()`/`mt_rand()`/`uniqid()` for tokens/secrets (PHP) |
+| <a name="rule-tls003"></a>TLS003 | high | TLS validation off via `CERT_NONE`, unverified contexts, `VERIFYHOST=0`, `NODE_TLS_REJECT_UNAUTHORIZED=0` |
+| <a name="rule-tls004"></a>TLS004 | high | Go `tls.Config{InsecureSkipVerify: true}` |
+| <a name="rule-cors002"></a>CORS002 | high | CORS reflects any request Origin, or credentials combined with a wildcard origin |
+| <a name="rule-crlf001"></a>CRLF001 | medium | HTTP header injection — user-influenced value written into a response header |
+| <a name="rule-cmp001"></a>CMP001 | medium | Secret/token compared with `==`/`===` instead of a constant-time compare |
+| <a name="rule-redir002"></a>REDIR002 | medium | DOM open redirect — `location` assigned from user input (JS/TS) |
+| <a name="rule-xxe002"></a>XXE002 | high | XXE — libxmljs entity expansion enabled (`noent`/`dtdload`) |
+| <a name="rule-xss005"></a>XSS005 | high | `insertAdjacentHTML`, Vue `v-html`, Angular `bypassSecurityTrust*`, Go `template.HTML()` on dynamic values |
+| <a name="rule-deser002"></a>DESER002 | high | `jsonpickle.decode` (Python) / `v8.deserialize` (JS) on dynamic data |
 
 Each finding carries: rule id, severity, `file:line`, code snippet, taint
 path (when tracked), *why it matters*, and a *fix suggestion*.
