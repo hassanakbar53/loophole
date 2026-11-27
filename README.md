@@ -153,6 +153,26 @@ Example — scan only `src`, never block the build:
           fail-on-findings: "false"
 ```
 
+## Pre-commit
+
+Catch findings before they are committed, with the
+[pre-commit framework](https://pre-commit.com):
+
+```yaml
+repos:
+  - repo: https://github.com/rootsiemen/loophole
+    rev: v1.2.0
+    hooks:
+      - id: loophole
+```
+
+The hook scans every staged JavaScript, TypeScript, Python, Go and PHP
+file and fails the commit when a file has critical or high findings
+(the scanner's default exit behaviour). Until the package is
+pip-installable (issue #21), the hook runs from a checkout of this
+repository via a small wrapper script, because `loophole scan` takes a
+single path per invocation.
+
 ## Example output
 
 ```
