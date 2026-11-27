@@ -44,6 +44,7 @@ _loophole() {
                 '--write-baseline[scan, write all findings to this baseline file, exit 0]:baseline file:_files' \
                 '--html[also write a self-contained HTML report]:HTML file:_files' \
                 '--junit[also write a JUnit XML report]:JUnit file:_files' \
+                '--gitlab[also write a GitLab SAST report]:GitLab SAST file:_files' \
                 '--cache[opt-in incremental cache file]:cache file:_files' \
                 '--rules[list all rule IDs and exit]' \
                 '--explain[show detail for one rule ID and exit]:rule ID:_loophole_rule_ids'

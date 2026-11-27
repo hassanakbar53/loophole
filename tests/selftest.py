@@ -3,6 +3,7 @@
 
 Run:  python3 tests/selftest.py
 """
+import hashlib
 import json
 import os
 import re
@@ -61,6 +62,21 @@ def scan_sarif(path):
         proc = subprocess.run(
             [sys.executable, SCANNER, "scan", path,
              "--sarif", out, "--no-color"],
+            capture_output=True, text=True, cwd=ROOT)
+        with open(out) as fh:
+            return proc.returncode, json.load(fh)
+    finally:
+        os.unlink(out)
+
+
+def scan_gitlab(path):
+    """Run the scanner with --gitlab, return (exit_code, parsed report)."""
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+        out = tmp.name
+    try:
+        proc = subprocess.run(
+            [sys.executable, SCANNER, "scan", path,
+             "--gitlab", out, "--no-color"],
             capture_output=True, text=True, cwd=ROOT)
         with open(out) as fh:
             return proc.returncode, json.load(fh)
@@ -769,6 +785,74 @@ class TestFixtures(unittest.TestCase):
                 os.unlink(clean_out)
         finally:
             os.unlink(out)
+
+    def test_gitlab_output(self):
+        """--gitlab emits a schema-15.x SAST report (issue #26): one
+        vulnerability per finding, stable hashed ids, GitLab severity
+        names, rule identifiers and file/start_line locations."""
+        target = os.path.join(FIX, "py_vuln.py")
+        code, report = scan_gitlab(target)
+        self.assertEqual(code, 1)
+        self.assertEqual(report["version"], "15.0.0")
+        self.assertTrue(report["schema"].endswith(
+            "sast-report-format.json"))
+        scan_block = report["scan"]
+        self.assertEqual(scan_block["type"], "sast")
+        self.assertEqual(scan_block["status"], "success")
+        self.assertEqual(scan_block["scanner"]["id"], "loophole")
+        self.assertEqual(scan_block["scanner"]["name"], "Loophole")
+        self.assertTrue(scan_block["scanner"]["version"])
+        _, findings = scan(target)
+        vulns = report["vulnerabilities"]
+        self.assertEqual(len(vulns), len(findings),
+                         "GitLab vulnerability count != JSON findings count")
+        expected_sev = {"critical": "Critical", "high": "High",
+                        "medium": "Medium"}
+        by_key = {(f["rule_id"], f["path"], f["line"]): f
+                  for f in findings}
+        seen_ids = set()
+        for vuln in vulns:
+            with self.subTest(vuln=vuln.get("id")):
+                for key in ("id", "category", "name", "message",
+                            "severity", "scanner", "identifiers",
+                            "location"):
+                    self.assertIn(key, vuln, f"missing {key}")
+                self.assertEqual(vuln["category"], "sast")
+                self.assertIn(vuln["severity"],
+                              ("Critical", "High", "Medium"))
+                self.assertEqual(vuln["scanner"]["id"], "loophole")
+                rule_id = vuln["identifiers"][0]["value"]
+                self.assertEqual(
+                    vuln["identifiers"][0]["type"], "loophole_rule")
+                self.assertTrue(vuln["identifiers"][0]["url"].endswith(
+                    "#rule-" + rule_id.lower()))
+                loc = vuln["location"]
+                f = by_key[(rule_id, loc["file"], loc["start_line"])]
+                self.assertEqual(vuln["severity"],
+                                 expected_sev[f["severity"]],
+                                 "severity mapping is wrong")
+                self.assertTrue(vuln["name"].strip())
+                self.assertTrue(vuln["message"].strip())
+                # id is the stable hash of rule|path|snippet
+                key = "|".join((f["rule_id"], f["path"], f["snippet"]))
+                self.assertEqual(
+                    vuln["id"],
+                    hashlib.sha256(key.encode("utf-8")).hexdigest())
+                self.assertNotIn(vuln["id"], seen_ids,
+                                 "vulnerability ids must be unique")
+                seen_ids.add(vuln["id"])
+        # ids are stable across scans
+        _, report2 = scan_gitlab(target)
+        self.assertEqual(
+            {v["id"] for v in report2["vulnerabilities"]}, seen_ids,
+            "vulnerability ids must be stable across scans")
+        # clean fixture: an empty vulnerabilities list, scan block intact
+        clean_code, clean_report = scan_gitlab(
+            os.path.join(FIX, "py_clean.py"))
+        self.assertEqual(clean_code, 0)
+        self.assertEqual(clean_report["vulnerabilities"], [])
+        self.assertEqual(clean_report["scan"]["type"], "sast")
+        self.assertEqual(clean_report["scan"]["status"], "success")
 
 
 class TestPrecommit(unittest.TestCase):

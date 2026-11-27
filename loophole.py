@@ -11,6 +11,7 @@ user-controlled input to dangerous sinks.
 Usage:
     python3 loophole.py scan <path> [--json out.json] [--sarif out.sarif]
                                     [--html report.html] [--junit report.xml]
+                                    [--gitlab gl-sast-report.json]
                                     [--fix-dry]
                                     [--severity critical,high]
                                     [--exclude dir1,dir2] [--no-color]
@@ -34,6 +35,7 @@ Stdlib only. No dependencies.
 import argparse
 import ast
 import difflib
+from datetime import datetime, timezone
 import fnmatch
 import hashlib
 import html
@@ -3728,6 +3730,81 @@ def write_junit(findings, out_path):
 
 
 # ---------------------------------------------------------------------------
+# Output: GitLab SAST report (schema 15.x, for the GitLab Security
+# Dashboard / merge request widget)
+# ---------------------------------------------------------------------------
+
+_GITLAB_SEVERITY = {"critical": "Critical", "high": "High",
+                    "medium": "Medium"}
+_GITLAB_SCHEMA_VERSION = "15.0.0"
+_GITLAB_SCHEMA_URL = (
+    "https://gitlab.com/gitlab-org/security-products/"
+    "security-report-schemas/-/raw/v15.0.0/dist/sast-report-format.json")
+
+
+def _gitlab_vuln_id(f):
+    """Stable vulnerability id: sha256 of the baseline key
+    (rule id, path, snippet) — so the same finding keeps the same id
+    across scans, and a finding survives small line shifts."""
+    key = "|".join((f.rule_id, f.path, f.snippet))
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def write_gitlab(findings, out_path):
+    """GitLab SAST report (schema 15.x).
+
+    One vulnerability entry per finding: `id` is the stable hash of
+    the baseline key, `category` is always "sast", `severity` maps
+    Loophole's critical/high/medium onto GitLab's Critical/High/
+    Medium, and `identifiers` carries the Loophole rule id (with a
+    link to the rule docs; a CWE identifier is added once rules
+    carry CWE ids). `confidence` is High for taint-tracked findings
+    and Medium otherwise. A clean scan emits an empty
+    `vulnerabilities` list with the same `scan` block.
+    """
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    vulns = [{
+        "id": _gitlab_vuln_id(f),
+        "category": "sast",
+        "name": f.title,
+        "message": f.why,
+        "description": f.why,
+        "severity": _GITLAB_SEVERITY[f.severity],
+        "confidence": "High" if f.taint else "Medium",
+        "solution": f.fix,
+        "scanner": {"id": "loophole", "name": "Loophole"},
+        "identifiers": [{
+            "type": "loophole_rule",
+            "name": f"Loophole {f.rule_id}",
+            "value": f.rule_id,
+            "url": rule_help_uri(f.rule_id),
+        }],
+        "location": {"file": f.path, "start_line": f.line,
+                     "end_line": f.line},
+    } for f in findings]
+    report = {
+        "version": _GITLAB_SCHEMA_VERSION,
+        "schema": _GITLAB_SCHEMA_URL,
+        "scan": {
+            "type": "sast",
+            "status": "success",
+            "start_time": now,
+            "end_time": now,
+            "scanner": {
+                "id": "loophole",
+                "name": "Loophole",
+                "version": VERSION,
+                "vendor": {"name": "Loophole"},
+            },
+        },
+        "vulnerabilities": vulns,
+    }
+    with open(out_path, "w", encoding="utf-8") as fh:
+        json.dump(report, fh, indent=2)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
 # Baseline: known findings you accept today, so CI only fails on NEW ones
 # ---------------------------------------------------------------------------
 
@@ -3874,6 +3951,8 @@ def build_parser():
                    help="also write a self-contained HTML report")
     s.add_argument("--junit", metavar="FILE", dest="junit_out",
                    help="also write a JUnit XML report (for CI dashboards)")
+    s.add_argument("--gitlab", metavar="FILE", dest="gitlab_out",
+                   help="also write a GitLab SAST report (schema 15.x)")
     s.add_argument("--cache", metavar="FILE",
                    help="opt-in incremental cache file: repeat scans "
                         "reuse findings for unchanged files (see README)")
@@ -3946,6 +4025,9 @@ def main(argv=None):
     if args.junit_out:
         write_junit(findings, args.junit_out)
         print(f"JUnit report: {args.junit_out}")
+    if args.gitlab_out:
+        write_gitlab(findings, args.gitlab_out)
+        print(f"GitLab SAST report: {args.gitlab_out}")
     if args.fix_dry:
         print(color.bold("\n── Suggested fixes (dry run — nothing modified) ──\n"))
         files_lines = {}
