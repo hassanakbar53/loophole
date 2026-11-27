@@ -77,6 +77,22 @@ docker build -t loophole .
 docker run --rm -v "$PWD:/src" loophole scan /src
 ```
 
+### Published image (GHCR)
+
+On every release, the smoke-tested image is published to GitHub
+Container Registry as `ghcr.io/rootsiemen/loophole:<tag>` and
+`:latest` — no local build needed:
+
+```bash
+docker pull ghcr.io/rootsiemen/loophole:latest
+docker run --rm -v "$PWD:/src" ghcr.io/rootsiemen/loophole:latest scan /src
+```
+
+For a specific release, replace `latest` with the tag, for
+example `ghcr.io/rootsiemen/loophole:v1.2.0`. The entrypoint is
+the same (`python3 loophole.py`), so all `scan` arguments work
+unchanged.
+
 That mounts the current directory at `/src` inside the container
 and scans it. The exit code is the same as the local scanner:
 **1** when any critical/high finding exists, **0** otherwise.
