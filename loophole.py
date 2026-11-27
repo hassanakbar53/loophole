@@ -199,9 +199,10 @@ def word_in(text, word):
 LANG_BY_EXT = {
     ".js": "js", ".jsx": "js", ".mjs": "js", ".cjs": "js",
     ".ts": "js", ".tsx": "js",          # TypeScript handled by the JS engine
+    ".mts": "js", ".cts": "js",         # explicit ESM / CJS TypeScript modules
     ".py": "py",
     ".go": "go",
-    ".php": "php",
+    ".php": "php", ".phtml": "php",
 }
 
 DEFAULT_EXCLUDES = {
