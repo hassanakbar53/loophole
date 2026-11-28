@@ -1687,6 +1687,141 @@ class TestScanTargetValidation(unittest.TestCase):
             shutil.rmtree(d)
 
 
+class TestCWE(unittest.TestCase):
+    """Issue #31: every rule carries a CWE id, surfaced in --rules,
+    JSON findings, SARIF taxa/rule metadata, the HTML report and the
+    GitLab identifiers."""
+
+    @staticmethod
+    def _module():
+        sys.path.insert(0, ROOT)
+        import loophole
+        return loophole
+
+    def test_every_rule_has_well_formed_cwe(self):
+        """Registry coverage: RULE_CWE maps exactly the rules in
+        RULES, each to a non-empty, well-formed CWE-<number> id, and
+        every mapped CWE has a SARIF taxa name."""
+        mod = self._module()
+        registry = {rid for rid, _langs, _fn in mod.RULES}
+        self.assertEqual(set(mod.RULE_CWE), registry,
+                         "RULE_CWE must cover exactly the RULES registry")
+        for rid, cwe in sorted(mod.RULE_CWE.items()):
+            with self.subTest(rule=rid):
+                self.assertRegex(cwe, r"^CWE-\d+$",
+                                 f"{rid}: malformed CWE id {cwe!r}")
+                self.assertIn(cwe, mod._CWE_NAMES,
+                              f"{rid}: {cwe} has no SARIF taxa name")
+                self.assertEqual(mod.rule_cwe(rid), cwe)
+        self.assertEqual(mod.rule_cwe("NOPE123"), "",
+                         "unknown rule ids must map to no CWE")
+
+    def test_json_findings_carry_cwe(self):
+        _code, findings = scan(os.path.join(FIX, "py_vuln.py"))
+        self.assertTrue(findings, "py_vuln.py produced no findings")
+        for f in findings:
+            with self.subTest(finding=f["rule_id"]):
+                self.assertRegex(f.get("cwe", ""), r"^CWE-\d+$",
+                                 f"{f['rule_id']}: JSON finding has no CWE")
+        sqli = [f for f in findings if f["rule_id"] == "SQLI002"]
+        self.assertTrue(sqli, "no SQLI002 finding in py_vuln.py")
+        self.assertTrue(all(f["cwe"] == "CWE-89" for f in sqli),
+                        "SQLI002 findings must carry CWE-89")
+
+    def test_rules_listing_shows_cwe(self):
+        proc = subprocess.run(
+            [sys.executable, SCANNER, "scan", "--rules", "."],
+            capture_output=True, text=True, cwd=ROOT)
+        self.assertEqual(proc.returncode, 0)
+        for cwe in ("CWE-89", "CWE-79", "CWE-78", "CWE-22", "CWE-502"):
+            self.assertIn(cwe, proc.stdout,
+                          f"--rules listing is missing {cwe}")
+        # every rule line carries its CWE
+        lines = [ln for ln in proc.stdout.splitlines()
+                 if re.match(r"^[A-Z]+\d{3}\s", ln)]
+        self.assertEqual(len(lines), 62, "--rules must list 62 rules")
+        for ln in lines:
+            self.assertRegex(ln, r"\bCWE-\d+\b",
+                             f"--rules line has no CWE: {ln!r}")
+
+    def test_explain_shows_cwe(self):
+        proc = subprocess.run(
+            [sys.executable, SCANNER, "scan", "--explain", "SQLI002"],
+            capture_output=True, text=True, cwd=ROOT)
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("CWE-89", proc.stdout,
+                      "--explain SQLI002 must show CWE-89")
+
+    def test_sarif_taxa_and_rule_cwe(self):
+        _code, sarif = scan_sarif(os.path.join(FIX, "py_vuln.py"))
+        driver = sarif["runs"][0]["tool"]["driver"]
+        taxa = driver.get("taxa", [])
+        self.assertTrue(taxa, "SARIF driver has no CWE taxa")
+        taxa_by_id = {t["id"]: t for t in taxa}
+        self.assertEqual(len(taxa), len(taxa_by_id),
+                         "SARIF taxa ids must be unique")
+        for cwe, entry in taxa_by_id.items():
+            with self.subTest(cwe=cwe):
+                self.assertRegex(cwe, r"^CWE-\d+$")
+                self.assertTrue(entry.get("name", "").strip())
+                self.assertTrue(entry.get("helpUri", "").startswith(
+                    "https://cwe.mitre.org/data/definitions/"))
+        for rule in driver["rules"]:
+            with self.subTest(rule=rule["id"]):
+                cwe = rule.get("properties", {}).get("cwe", "")
+                self.assertRegex(cwe, r"^CWE-\d+$",
+                                 f"{rule['id']}: rule has no CWE")
+                self.assertIn(cwe, taxa_by_id,
+                              f"{rule['id']}: CWE {cwe} missing from taxa")
+                rels = rule.get("relationships", [])
+                self.assertTrue(
+                    any(r.get("target", {}).get("id") == cwe
+                        for r in rels),
+                    f"{rule['id']}: no relationship to {cwe}")
+        for result in sarif["runs"][0]["results"]:
+            with self.subTest(result=result["ruleId"]):
+                self.assertTrue(result.get("taxa"),
+                                f"{result['ruleId']}: result has no taxa")
+                self.assertIn(result["taxa"][0]["id"], taxa_by_id)
+
+    def test_html_report_shows_cwe(self):
+        with tempfile.NamedTemporaryFile(suffix=".html",
+                                         delete=False) as tmp:
+            out = tmp.name
+        try:
+            proc = subprocess.run(
+                [sys.executable, SCANNER, "scan",
+                 os.path.join(FIX, "js_vuln.js"),
+                 "--html", out, "--no-color"],
+                capture_output=True, text=True, cwd=ROOT)
+            self.assertEqual(proc.returncode, 1)
+            with open(out) as fh:
+                page = fh.read()
+            self.assertIn("CWE-798", page,
+                          "HTML report must show the SEC001 CWE")
+            self.assertIn("CWE-79", page,
+                          "HTML report must show an XSS CWE")
+        finally:
+            os.unlink(out)
+
+    def test_gitlab_identifiers_carry_cwe(self):
+        _code, report = scan_gitlab(os.path.join(FIX, "py_vuln.py"))
+        vulns = report["vulnerabilities"]
+        self.assertTrue(vulns, "py_vuln.py produced no vulnerabilities")
+        sqli = [v for v in vulns
+                if v["identifiers"][0]["value"] == "SQLI002"]
+        self.assertTrue(sqli, "no SQLI002 vulnerability in GitLab report")
+        for vuln in sqli:
+            cwe_ids = [i for i in vuln["identifiers"]
+                       if i["type"] == "CWE"]
+            self.assertEqual(len(cwe_ids), 1,
+                             "each vulnerability needs exactly one CWE id")
+            self.assertEqual(cwe_ids[0]["value"], "89")
+            self.assertEqual(cwe_ids[0]["name"], "CWE-89")
+            self.assertTrue(cwe_ids[0]["url"].startswith(
+                "https://cwe.mitre.org/data/definitions/89"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
