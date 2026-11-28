@@ -106,6 +106,15 @@ def scan_gitlab(path):
             return proc.returncode, json.load(fh)
     finally:
         os.unlink(out)
+
+
+def scan_annotations(path, *extra):
+    """Run the scanner with --format annotations, return (exit_code, lines)."""
+    proc = subprocess.run(
+        [sys.executable, SCANNER, "scan", path,
+         "--format", "annotations", "--no-color"] + list(extra),
+        capture_output=True, text=True, cwd=ROOT)
+    return proc.returncode, proc.stdout.splitlines()
 # SARIF level values (SARIF 2.1.0, section 3.27.9). write_sarif only
 # emits "error" and "warning", but any of these is structurally valid.
 SARIF_LEVELS = {"error", "warning", "note", "none"}
@@ -329,6 +338,84 @@ class TestFixtures(unittest.TestCase):
         rule_ids = {r["id"] for r in rules}
         self.assertTrue(all(r["ruleId"] in rule_ids for r in results),
                         "a result references a rule missing from rules")
+
+    def test_annotations_output(self):
+        """Issue #27: --format annotations emits one workflow command
+        per finding — ::error for critical/high, ::warning for medium —
+        with workflow-command escaping, and exit code unchanged."""
+        code, lines = scan_annotations(os.path.join(FIX, "py_vuln.py"))
+        self.assertEqual(code, 1)
+        self.assertEqual(len(lines), 35)
+        errors = [l for l in lines if l.startswith("::error ")]
+        warnings = [l for l in lines if l.startswith("::warning ")]
+        self.assertEqual(len(errors), 25)
+        self.assertEqual(len(warnings), 10)
+        for line in lines:
+            self.assertRegex(
+                line,
+                r"^::(error|warning) file=[^,]+,line=\d+,title=[A-Z0-9]+::.+",
+                f"malformed annotation line: {line!r}")
+        # exact line for a known fixture finding, including % escaping
+        fixture = os.path.join(FIX, "py_vuln.py")
+        self.assertIn(
+            f"::error file={fixture},line=20,title=SQLI002::"
+            "SQL injection via string formatting (Python) — "
+            "cursor.execute(\"SELECT * FROM orders WHERE id = %25s\" %25 oid)"
+            "  # SQLI002 %25 format",
+            lines)
+        # medium findings become ::warning, e.g. DBG001
+        self.assertIn(
+            f"::warning file={fixture},line=73,title=DBG001::"
+            "Debug mode enabled — app.run(debug=True)  # DBG001",
+            lines)
+        # no unescaped % may survive: every % starts %25, %0D or %0A
+        for line in lines:
+            self.assertIsNone(
+                re.search(r"%(?!25|0D|0A)", line),
+                f"unescaped % in annotation line: {line!r}")
+        # annotations replace the human report, not duplicate it
+        self.assertFalse(any("Loophole found" in l for l in lines))
+
+    def test_annotations_severity_filter(self):
+        """Issue #27: --severity filters annotations like the human
+        report, and the exit code still reflects critical/high."""
+        code, lines = scan_annotations(os.path.join(FIX, "py_vuln.py"),
+                                       "--severity", "high")
+        self.assertEqual(code, 1)
+        self.assertEqual(len(lines), 25)
+        self.assertFalse(any(l.startswith("::warning ") for l in lines))
+
+    def test_annotations_flag_alias(self):
+        """Issue #27: --annotations is shorthand for --format annotations."""
+        proc = subprocess.run(
+            [sys.executable, SCANNER, "scan",
+             os.path.join(FIX, "py_vuln.py"),
+             "--annotations", "--no-color"],
+            capture_output=True, text=True, cwd=ROOT)
+        _code, lines = scan_annotations(os.path.join(FIX, "py_vuln.py"))
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(proc.stdout.splitlines(), lines)
+
+    def test_annotation_escaping(self):
+        """Issue #27: workflow-command escaping escapes % first, so the
+        % introduced by later steps is not double-escaped."""
+        sys.path.insert(0, ROOT)
+        import loophole
+        self.assertEqual(
+            loophole._escape_workflow_data("100% sure\r\nnext"),
+            "100%25 sure%0D%0Anext")
+        self.assertEqual(
+            loophole._escape_workflow_property("a:b,c%d"),
+            "a%3Ab%2Cc%25d")
+        self.assertEqual(
+            loophole._escape_workflow_property("%3A"), "%253A")
+        finding = loophole.Finding(
+            "SEC002", "high", "Hardcoded password", "we,ird:path.py", 3,
+            "x = 100% ok", "why", "fix")
+        self.assertEqual(
+            loophole.annotation_line(finding),
+            "::error file=we%2Cird%3Apath.py,line=3,title=SEC002::"
+            "Hardcoded password — x = 100%25 ok")
 
     def test_sarif_structure_validation(self):
         """Issue #50: write_sarif output is structurally valid SARIF

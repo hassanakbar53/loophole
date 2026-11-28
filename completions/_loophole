@@ -35,6 +35,8 @@ _loophole() {
                 '--help[show help]' \
                 '--json[write findings as JSON]:JSON file:_files' \
                 '--sarif[write findings as SARIF 2.1.0]:SARIF file:_files' \
+                '--format[output format]:format:(text annotations)' \
+                '--annotations[shorthand for --format annotations]' \
                 '--fix-dry[print suggested patches as diffs (never modifies)]' \
                 '--severity[minimum severity to display]:severity:(critical high medium)' \
                 '--exclude[comma-separated dir names to skip]:directory:_files -/' \
