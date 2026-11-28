@@ -23,6 +23,23 @@ All notable changes to Loophole are documented here.
   plain copies and is dropped on reassignment to trusted data, taint is
   checked on the payload argument only, and sources named only in
   comments do not taint a variable.
+
+## 1.2.2 — 2026-11-27
+
+### Fixes
+
+- Docs: the Website link now points to the live Loophole home
+  (https://frinjo.me/loophole); the old portfolio URL was dead. No
+  scanner changes; code is identical to v1.2.1.
+
+## 1.2.1 — 2026-11-27
+
+### Fixes
+
+- Patch release to publish Loophole to the GitHub Marketplace:
+  shortened the `action.yml` description to under 125 characters, as
+  required for Marketplace listings. No scanner changes.
+
 ## 1.2.0 — 2026-11-27
 
 ### New rules (61 → 62)
