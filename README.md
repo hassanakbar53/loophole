@@ -45,6 +45,11 @@ python3 loophole.py scan ./src --json report.json
 # SARIF for GitHub code scanning
 python3 loophole.py scan ./src --sarif results.sarif
 
+# GitHub workflow-command annotations: one ::error/::warning per finding,
+# shown inline on the PR diff with no SARIF upload step
+python3 loophole.py scan ./src --format annotations
+# (--annotations is shorthand for --format annotations)
+
 # self-contained HTML report (inline CSS, no external assets)
 python3 loophole.py scan ./src --html report.html
 
@@ -338,6 +343,23 @@ jobs:
 
 The step fails (exit 1) when critical/high findings exist, and results
 appear under your repo's **Security → Code scanning** tab.
+
+### Inline PR annotations (no upload step)
+
+If you only want findings inline on the PR diff, `--format annotations`
+prints one GitHub workflow command per finding instead of the human
+report — `::error` for critical/high, `::warning` for medium — with
+`file`, `line` and `title` (rule id) properties escaped per the
+workflow-command spec. No SARIF upload step is needed:
+
+```yaml
+      - name: Run Loophole
+        run: python3 loophole.py scan ./src --format annotations
+```
+
+The exit code is unchanged (1 when critical/high findings exist), the
+`--severity` filter applies as usual, and `--json`/`--sarif`/`--html`
+side outputs still work alongside it.
 
 ## Suppressing findings
 
