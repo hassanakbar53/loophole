@@ -46,7 +46,7 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 
-VERSION = "1.2.0"
+VERSION = "1.2.2"
 
 # Home of the rule docs: the README rules table carries one named anchor
 # per rule (<a name="rule-sec001">), so every rule links to its own row.

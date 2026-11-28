@@ -1521,6 +1521,26 @@ class TestShellCompletions(unittest.TestCase):
                          f"zsh -n failed: {proc.stderr}")
 
 
+class TestVersionMetadata(unittest.TestCase):
+    """The self-reported version must match the newest CHANGELOG release."""
+
+    def test_version_matches_latest_changelog_release(self):
+        sys.path.insert(0, ROOT)
+        import loophole
+        with open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8") as fh:
+            changelog = fh.read()
+        releases = re.findall(r"^## (\d+\.\d+\.\d+)\b", changelog,
+                              re.MULTILINE)
+        self.assertTrue(releases,
+                        "CHANGELOG.md has no versioned release heading")
+        latest = max(releases,
+                     key=lambda v: tuple(int(p) for p in v.split(".")))
+        self.assertEqual(
+            loophole.VERSION, latest,
+            f"VERSION is {loophole.VERSION} but the newest CHANGELOG "
+            f"release is {latest}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
