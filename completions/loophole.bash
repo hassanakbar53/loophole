@@ -13,7 +13,7 @@ _loophole() {
     local cur prev sub
     local -a flags=(
         -h --help
-        --json --sarif --fix-dry --severity --exclude --no-color
+        --json --sarif --format --annotations --fix-dry --severity --exclude --no-color
         --config --baseline --write-baseline --html --junit --gitlab --cache
         --rules --explain
     )
@@ -27,6 +27,9 @@ _loophole() {
         case "$flag" in
             --severity)
                 COMPREPLY=( $(compgen -W "critical high medium" -- "$val") )
+                ;;
+            --format)
+                COMPREPLY=( $(compgen -W "text annotations" -- "$val") )
                 ;;
             --json|--sarif|--config|--baseline|--write-baseline|--html|--junit|--gitlab|--cache)
                 COMPREPLY=( $(compgen -f -- "$val") )
@@ -57,6 +60,10 @@ _loophole() {
             case "$prev" in
                 --severity)
                     COMPREPLY=( $(compgen -W "critical high medium" -- "$cur") )
+                    return 0
+                    ;;
+                --format)
+                    COMPREPLY=( $(compgen -W "text annotations" -- "$cur") )
                     return 0
                     ;;
                 --json|--sarif|--config|--baseline|--write-baseline|--html|--junit|--gitlab|--cache)
