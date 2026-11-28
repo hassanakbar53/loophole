@@ -3570,6 +3570,71 @@ def print_report(findings, color, min_sev="medium"):
 
 
 # ---------------------------------------------------------------------------
+# Output: GitHub workflow-command annotations (issue #27)
+# ---------------------------------------------------------------------------
+
+def _escape_workflow_data(text):
+    """Escape message data for a GitHub workflow command.
+
+    The workflow-command spec escapes ``%`` first, then carriage
+    return and line feed.
+    """
+    return (text.replace("%", "%25")
+                .replace("\r", "%0D")
+                .replace("\n", "%0A"))
+
+
+def _escape_workflow_property(text):
+    """Escape a workflow-command property value.
+
+    Properties escape ``%``, ``\r`` and ``\n`` like message data, plus
+    ``:`` and ``,`` — which would otherwise end the property list.
+    The ``%`` step runs first (via _escape_workflow_data) so the
+    ``%`` introduced by e.g. ``%3A`` is not escaped a second time.
+    """
+    return (_escape_workflow_data(text)
+            .replace(":", "%3A")
+            .replace(",", "%2C"))
+
+
+_ANNOTATION_COMMAND = {"critical": "error", "high": "error",
+                       "medium": "warning"}
+
+
+def annotation_line(finding):
+    """One workflow command for a finding, e.g.::
+
+        ::error file=app.py,line=3,title=SEC002::Hardcoded password — ...
+
+    Critical/high findings become ``::error``, medium ones
+    ``::warning`` — the same mapping write_sarif uses for SARIF
+    levels. The message is the rule title plus the offending source
+    line, with workflow-command escaping applied.
+    """
+    command = _ANNOTATION_COMMAND[finding.severity]
+    props = ("file=" + _escape_workflow_property(finding.path) +
+             ",line=" + str(finding.line) +
+             ",title=" + _escape_workflow_property(finding.rule_id))
+    message = _escape_workflow_data(
+        f"{finding.title} — {finding.snippet}")
+    return f"::{command} {props}::{message}"
+
+
+def print_annotations(findings, min_sev="medium"):
+    """Print one workflow command per finding (issue #27).
+
+    Replaces the human report when ``--format annotations`` is used,
+    so a GitHub Actions step annotates the PR diff with no SARIF
+    upload step. The ``--severity`` filter applies exactly as it
+    does to the human report, and the exit code is unchanged.
+    """
+    sev_ok = lambda s: SEV_ORDER[s] <= SEV_ORDER[min_sev]
+    for f in findings:
+        if sev_ok(f.severity):
+            print(annotation_line(f))
+
+
+# ---------------------------------------------------------------------------
 # Output: JSON / SARIF
 # ---------------------------------------------------------------------------
 
@@ -3945,6 +4010,13 @@ def build_parser():
                    help="write findings as JSON")
     s.add_argument("--sarif", dest="sarif_out", metavar="FILE",
                    help="write findings as SARIF 2.1.0")
+    s.add_argument("--format", default="text",
+                   choices=["text", "annotations"],
+                   help="output format: text (default) or annotations "
+                        "(GitHub workflow commands, one ::error/::warning "
+                        "per finding — no SARIF upload needed)")
+    s.add_argument("--annotations", action="store_true",
+                   help="shorthand for --format annotations")
     s.add_argument("--fix-dry", action="store_true",
                    help="print suggested patches as diffs (never modifies)")
     s.add_argument("--severity", default="medium",
@@ -4024,7 +4096,10 @@ def main(argv=None):
         findings = [f for f in findings
                     if _baseline_key(f) not in known]
 
-    print_report(findings, color, args.severity)
+    if args.format == "annotations" or args.annotations:
+        print_annotations(findings, args.severity)
+    else:
+        print_report(findings, color, args.severity)
     if ignored:
         print(color.dim(f"{ignored} file(s) skipped by .loopholeignore"))
     if args.cache:
