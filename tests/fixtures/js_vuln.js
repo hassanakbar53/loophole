@@ -76,6 +76,9 @@ function renderBio(bio) {
 }
 
 // --- 2026 expansion: new-rule coverage ---
+const serialize = require('node-serialize');
+const restored = serialize.unserialize(req.body.payload); // DESER001
+
 const _ = require('lodash');
 _.merge({}, req.body); // PROTO001
 
