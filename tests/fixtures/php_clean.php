@@ -27,6 +27,8 @@ curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
 curl_exec($ch);
 
 // --- 2026 expansion: safe counterparts (must stay silent) ---
+$signedToken = JWT::encode($payload, getenv('JWT_SECRET'), 'HS256'); // JWT002-safe
+
 $obj = unserialize($cache, ['allowed_classes' => false]); // DESER001-safe
 
 $serial = unserialize('a:2:{i:0;s:3:"foo";i:1;i:42;}'); // DESER001-safe: literal

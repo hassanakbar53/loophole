@@ -2067,7 +2067,7 @@ def rule_JWT002(ctx):
     none_pat = re.compile(
         r"(?i)algorithms?\s*[:=]\s*\[[^\]]*['\"]none['\"]")
     weak_pat = re.compile(
-        r"(?i)\bjwt\.(verify|decode|sign|encode)\b[^\n]*"
+        r"(?i)\bjwt(?:\.|::)(verify|decode|sign|encode)\b[^\n]*"
         r"['\"](secret|changeme|password|123456|key)['\"]")
     verify_off = re.compile(
         r"['\"]verify_signature['\"]\s*:\s*False")

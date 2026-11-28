@@ -27,6 +27,9 @@ $data = file_get_contents($_GET['page']); // PATH001 (tainted)
 include $_GET['tpl']; // PATH001 (tainted, LFI)
 
 // --- 2026 expansion: new-rule coverage ---
+$claims = JWT::decode($_GET['token']); // JWT001 (PHP decode pattern)
+$weakToken = JWT::encode($payload, 'secret', 'HS256'); // JWT002 (weak secret)
+
 $obj = unserialize($_GET['data']); // DESER001 (direct superglobal)
 
 $prefs = $_COOKIE['prefs']; // tainted
