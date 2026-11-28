@@ -3508,10 +3508,12 @@ def scan_path(root, excludes, config=None, ignore_patterns=None,
         cache = load_cache(cache_path, config_hash)
     kept = {}  # entries for files seen on this run only (prunes deletions)
     cached = 0
+    scanned = 0
     for path in sorted(iter_source_files(root, excludes, ignore_patterns,
                                          stats)):
         if cache_abs and os.path.abspath(path) == cache_abs:
             continue  # never scan the cache file itself
+        scanned += 1
         key = _file_cache_key(path) if cache_path else None
         entry = cache.get(path) if key is not None else None
         if (isinstance(entry, dict) and entry.get("key") == key
@@ -3531,6 +3533,7 @@ def scan_path(root, excludes, config=None, ignore_patterns=None,
     if cache_path:
         save_cache(cache_path, kept, config_hash)
     stats["cached"] = cached
+    stats["scanned"] = scanned
     findings = _dedupe_findings(findings)
     findings.sort(key=lambda f: (SEV_ORDER[f.severity], f.path, f.line))
     return findings, stats["ignored"]
@@ -4069,6 +4072,11 @@ def main(argv=None):
     if args.path is None:
         parser.error("the following arguments are required: path")
 
+    if not os.path.exists(args.path):
+        print(f"loophole: no such file or directory: {args.path}",
+              file=sys.stderr)
+        return 2
+
     use_color = not args.no_color and sys.stdout.isatty()
     color = Color(use_color)
 
@@ -4080,6 +4088,10 @@ def main(argv=None):
                                   ignore_patterns,
                                   cache_path=args.cache, stats=stats)
     cached = stats.get("cached", 0)
+
+    if stats.get("scanned", 0) == 0:
+        print(f"loophole: warning: scanned 0 files under {args.path} "
+              f"(nothing scannable found)", file=sys.stderr)
 
     if args.write_baseline:
         write_baseline(findings, args.write_baseline)

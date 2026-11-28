@@ -1628,6 +1628,65 @@ class TestVersionMetadata(unittest.TestCase):
             f"release is {latest}")
 
 
+class TestScanTargetValidation(unittest.TestCase):
+    """A missing scan target must not look like a clean scan (issue #68):
+    exit 2 and name the path; a target with nothing scannable warns but
+    keeps normal scan semantics."""
+
+    def test_missing_path_exits_2_and_names_the_path(self):
+        base = tempfile.mkdtemp()
+        missing = os.path.join(base, "no-such-dir")
+        try:
+            proc, report = run_scan_full(missing)
+            self.assertEqual(
+                proc.returncode, 2,
+                "a missing scan path must exit 2, not look clean")
+            self.assertIsNone(
+                report, "no JSON report should be written for a missing "
+                        "path")
+            self.assertIn("no-such-dir", proc.stderr)
+            self.assertNotIn("No loopholes found", proc.stdout)
+        finally:
+            shutil.rmtree(base)
+
+    def test_empty_directory_warns_zero_files(self):
+        empty = tempfile.mkdtemp()
+        try:
+            proc, report = run_scan_full(empty)
+            self.assertEqual(proc.returncode, 0)
+            self.assertIsNotNone(report)
+            self.assertEqual(report["findings"], [])
+            self.assertIn("scanned 0", proc.stderr)
+        finally:
+            shutil.rmtree(empty)
+
+    def test_unsupported_file_warns_zero_files(self):
+        d = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(d, "notes.xyz"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("hello\n")
+            proc, report = run_scan_full(d)
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(report["findings"], [])
+            self.assertIn("scanned 0", proc.stderr)
+        finally:
+            shutil.rmtree(d)
+
+    def test_real_scan_does_not_warn_zero(self):
+        d = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(d, "clean.py"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("x = 1\n")
+            proc, report = run_scan_full(d)
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(report["findings"], [])
+            self.assertNotIn("scanned 0", proc.stderr)
+        finally:
+            shutil.rmtree(d)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
