@@ -69,7 +69,7 @@ class Finding:
     """One detected loophole."""
 
     __slots__ = ("rule_id", "severity", "title", "path", "line", "snippet",
-                 "why", "fix", "taint")
+                 "why", "fix", "taint", "cwe")
 
     def __init__(self, rule_id, severity, title, path, line, snippet,
                  why, fix, taint=None):
@@ -82,10 +82,15 @@ class Finding:
         self.why = why              # why it matters
         self.fix = fix              # how to fix it
         self.taint = taint          # e.g. "req.query.q -> query" or None
+        # CWE id comes from the rule definition (RULE_CWE), so a finding
+        # can never carry a CWE its rule does not have — including
+        # findings rebuilt from a cache entry via _finding_from_dict.
+        self.cwe = rule_cwe(rule_id)
 
     def to_dict(self):
         d = {
             "rule_id": self.rule_id,
+            "cwe": self.cwe,
             "severity": self.severity,
             "title": self.title,
             "path": self.path,
@@ -2920,6 +2925,149 @@ RULES = [
 
 
 # ---------------------------------------------------------------------------
+# CWE identifiers (Issue #31)
+#
+# Every rule in RULES maps to exactly one CWE id. RULE_CWE is the
+# single source of truth: rule_cwe() is the only lookup, used by
+# Finding (so JSON findings carry it), --rules, --explain, SARIF
+# (taxa + rule metadata), the HTML report and the GitLab identifiers
+# — the id can never drift between outputs. The selftest asserts
+# every registry rule has a non-empty, well-formed CWE-<number> id,
+# so a future rule cannot ship without one.
+# ---------------------------------------------------------------------------
+
+RULE_CWE = {
+    # Secrets / hardcoded credentials (CWE-798).
+    "SEC001": "CWE-798", "SEC002": "CWE-798", "SEC003": "CWE-798",
+    "SEC004": "CWE-798", "SEC005": "CWE-798",
+    # SQL injection (CWE-89).
+    "SQLI001": "CWE-89", "SQLI002": "CWE-89", "SQLI003": "CWE-89",
+    "SQLI004": "CWE-89",
+    # Cross-site scripting (CWE-79).
+    "XSS001": "CWE-79", "XSS002": "CWE-79", "XSS003": "CWE-79",
+    "XSS004": "CWE-79", "XSS005": "CWE-79",
+    # OS command injection (CWE-78).
+    "CMD001": "CWE-78", "CMD002": "CWE-78", "CMD003": "CWE-78",
+    "CMD004": "CWE-78",
+    # Path traversal / Zip Slip (CWE-22).
+    "PATH001": "CWE-22", "PATH002": "CWE-22", "ZIP001": "CWE-22",
+    # Weak randomness (CWE-338).
+    "RAND001": "CWE-338", "RAND002": "CWE-338", "RAND003": "CWE-338",
+    "RAND004": "CWE-338",
+    # Weak / broken crypto (CWE-327); hardcoded IV (CWE-329).
+    "CRY001": "CWE-327", "CRY002": "CWE-327", "CRY003": "CWE-327",
+    "CRY004": "CWE-329", "CRY005": "CWE-327",
+    # Code / eval injection (CWE-95, CWE-94).
+    "EVAL001": "CWE-95", "EVAL002": "CWE-95", "SSTI001": "CWE-94",
+    "SSRF001": "CWE-918",
+    "AUTH001": "CWE-862",
+    "CORS001": "CWE-942", "CORS002": "CWE-942",
+    # JWT signature handling (CWE-347).
+    "JWT001": "CWE-347", "JWT002": "CWE-347",
+    # TLS: certificate validation (CWE-295), weak protocol (CWE-327).
+    "TLS001": "CWE-295", "TLS002": "CWE-327", "TLS003": "CWE-295",
+    "TLS004": "CWE-295",
+    "DBG001": "CWE-489",
+    "ERR001": "CWE-209",
+    "PROTO001": "CWE-1321",
+    "DESER001": "CWE-502", "DESER002": "CWE-502",
+    "NOSQL001": "CWE-943",
+    "XXE001": "CWE-611", "XXE002": "CWE-611",
+    "REDIR001": "CWE-601", "REDIR002": "CWE-601",
+    "CSRF001": "CWE-352",
+    "UPL001": "CWE-434",
+    "REDOS001": "CWE-1333",
+    "LOG001": "CWE-532",
+    "LDAP001": "CWE-90",
+    "HDR001": "CWE-693",
+    "COOKIE001": "CWE-614",
+    "CRLF001": "CWE-113",
+    "CMP001": "CWE-208",
+}
+
+# Short names for the CWEs used above (MITRE titles, shortened).
+# Used for the SARIF taxa entries.
+_CWE_NAMES = {
+    "CWE-22": "Improper Limitation of a Pathname to a Restricted "
+              "Directory ('Path Traversal')",
+    "CWE-78": "Improper Neutralization of Special Elements used in an "
+              "OS Command ('OS Command Injection')",
+    "CWE-79": "Improper Neutralization of Input During Web Page "
+              "Generation ('Cross-site Scripting')",
+    "CWE-89": "Improper Neutralization of Special Elements used in an "
+              "SQL Command ('SQL Injection')",
+    "CWE-90": "Improper Neutralization of Special Elements used in an "
+              "LDAP Query ('LDAP Injection')",
+    "CWE-94": "Improper Control of Generation of Code "
+              "('Code Injection')",
+    "CWE-95": "Improper Neutralization of Directives in Dynamically "
+              "Evaluated Code ('Eval Injection')",
+    "CWE-113": "Improper Neutralization of CRLF Sequences in HTTP "
+               "Headers ('HTTP Response Splitting')",
+    "CWE-208": "Observable Timing Discrepancy",
+    "CWE-209": "Generation of Error Message Containing Sensitive "
+               "Information",
+    "CWE-295": "Improper Certificate Validation",
+    "CWE-327": "Use of a Broken or Risky Cryptographic Algorithm",
+    "CWE-329": "Generation of Predictable IV with CBC Mode",
+    "CWE-338": "Use of Cryptographically Weak Pseudo-Random Number "
+               "Generator (PRNG)",
+    "CWE-347": "Improper Verification of Cryptographic Signature",
+    "CWE-352": "Cross-Site Request Forgery (CSRF)",
+    "CWE-434": "Unrestricted Upload of File with Dangerous Type",
+    "CWE-489": "Active Debug Code",
+    "CWE-502": "Deserialization of Untrusted Data",
+    "CWE-532": "Insertion of Sensitive Information into Log File",
+    "CWE-601": "URL Redirection to Untrusted Site ('Open Redirect')",
+    "CWE-611": "Improper Restriction of XML External Entity Reference",
+    "CWE-614": "Sensitive Cookie in HTTPS Session Without 'Secure' "
+               "Attribute",
+    "CWE-693": "Protection Mechanism Failure",
+    "CWE-798": "Use of Hard-coded Credentials",
+    "CWE-862": "Missing Authorization",
+    "CWE-918": "Server-Side Request Forgery (SSRF)",
+    "CWE-942": "Permissive Cross-domain Policy with Untrusted Domains",
+    "CWE-943": "Improper Neutralization of Special Elements in Data "
+               "Query Logic",
+    "CWE-1321": "Improperly Controlled Modification of Object "
+                "Prototype Attributes ('Prototype Pollution')",
+    "CWE-1333": "Inefficient Regular Expression Complexity",
+}
+
+_CWE_ID_RE = re.compile(r"^CWE-\d+$")
+
+
+def rule_cwe(rule_id):
+    """CWE identifier for one rule id, e.g. "CWE-89"; "" when unknown."""
+    return RULE_CWE.get(rule_id, "")
+
+
+def cwe_help_uri(cwe_id):
+    """MITRE CWE page for one CWE id, e.g. CWE-89."""
+    return f"https://cwe.mitre.org/data/definitions/{cwe_id[4:]}.html"
+
+
+def cwe_taxa():
+    """SARIF taxa entries, one per distinct CWE used by RULES.
+
+    In RULES order, each with an id, name, shortDescription and a
+    MITRE helpUri, so SARIF consumers can resolve every finding's
+    CWE. Returns a list of (cwe_id, taxa_entry) pairs in order.
+    """
+    order = []
+    for rid, _langs, _fn in RULES:
+        cwe = rule_cwe(rid)
+        if cwe and cwe not in order:
+            order.append(cwe)
+    return [(cwe, {"id": cwe,
+                   "name": _CWE_NAMES.get(cwe, cwe),
+                   "shortDescription": {
+                       "text": _CWE_NAMES.get(cwe, cwe)},
+                   "helpUri": cwe_help_uri(cwe)})
+            for cwe in order]
+
+
+# ---------------------------------------------------------------------------
 # Rule metadata for `scan --explain`
 #
 # The rule functions are the single source of truth for their own
@@ -3108,6 +3256,7 @@ def get_rule_info(rule_id):
         variants = _extract_rule_meta(func, rid)
         return {"id": rid, "languages": list(langs),
                 "severity": variants[0]["severity"] if variants else "",
+                "cwe": rule_cwe(rid),
                 "description": doc,
                 "variants": variants}
     return None
@@ -3133,6 +3282,8 @@ def explain_rule(rule_id):
     print(info["id"])
     print(f"  Languages: {', '.join(info['languages'])}")
     print(f"  Severity: {info['severity']}")
+    if info["cwe"]:
+        print(f"  CWE: {info['cwe']} ({cwe_help_uri(info['cwe'])})")
     if info["description"]:
         print(f"  Description: {info['description']}")
     if len(info["variants"]) == 1:
@@ -3673,11 +3824,21 @@ def write_sarif(findings, out_path):
     DESER001, XSS005) use their first variant for the rule card; each
     individual result still carries its own variant's title and fix
     in its message text.
+
+    CWE (Issue #31): the driver also carries a `taxa` array with one
+    entry per distinct CWE used by the rules, and every rule entry
+    links to its CWE via `properties.cwe` and a `relationships`
+    target (index into taxa). Each result carries the same reference
+    in its own `taxa`, so a CWE is visible per finding as well as
+    per rule.
     """
     meta = _load_all_rule_meta()
+    taxa_pairs = cwe_taxa()
+    taxa_index = {cwe: i for i, (cwe, _entry) in enumerate(taxa_pairs)}
     rules = []
     for rid, _langs, _fn in RULES:
         variants = meta.get(rid, [])
+        cwe = rule_cwe(rid)
         entry = {"id": rid, "helpUri": rule_help_uri(rid)}
         if variants:
             first = variants[0]
@@ -3693,12 +3854,21 @@ def write_sarif(findings, out_path):
             # bare stub (with its doc link) rather than dropping it.
             entry["name"] = rid
             entry["shortDescription"] = {"text": rid}
+            entry["properties"] = {}
+        if cwe:
+            entry["properties"]["cwe"] = cwe
+            entry["relationships"] = [{
+                "target": {"id": cwe, "index": taxa_index[cwe]},
+                "kinds": ["relevant"],
+            }]
         rules.append(entry)
     level = _SARIF_LEVEL
     results = [{
         "ruleId": f.rule_id,
         "level": level[f.severity],
         "message": {"text": f"{f.title} — {f.fix}"},
+        "taxa": [{"id": f.cwe, "index": taxa_index[f.cwe]}]
+        if f.cwe else [],
         "locations": [{
             "physicalLocation": {
                 "artifactLocation": {"uri": f.path},
@@ -3716,6 +3886,7 @@ def write_sarif(findings, out_path):
                 "version": VERSION,
                 "informationUri": RULE_DOC_URL,
                 "rules": rules,
+                "taxa": [entry for _cwe, entry in taxa_pairs],
             }},
             "results": results,
         }],
@@ -3736,7 +3907,9 @@ _HTML_CSS = (
     "6px solid #999;border-radius:4px;padding:.6rem 1rem;margin:.8rem 0}"
     ".finding.critical{border-left-color:#c0392b}.finding.high{"
     "border-left-color:#e67e22}.finding.medium{border-left-color:#2980b9}"
-    ".loc{color:#555;font-family:ui-monospace,monospace}pre{background:"
+    ".loc{color:#555;font-family:ui-monospace,monospace}"
+    ".cwe{color:#555;font-family:ui-monospace,monospace}"
+    "pre{background:"
     "#f6f6f6;padding:.5rem;overflow-x:auto}.taint{color:#c0392b}"
     "h2.critical{color:#c0392b}h2.high{color:#e67e22}h2.medium{"
     "color:#2980b9}")
@@ -3768,6 +3941,8 @@ def write_html(findings, out_path):
             parts.append(f'<div class="finding {sev}">')
             parts.append(f"<h3>{esc(f.rule_id)} — {esc(f.title)}</h3>")
             parts.append(f'<p class="loc">{esc(f.path)}:{f.line}</p>')
+            if f.cwe:
+                parts.append(f'<p class="cwe">CWE: {esc(f.cwe)}</p>')
             parts.append(f"<pre>{esc(f.snippet)}</pre>")
             if f.taint:
                 parts.append(f'<p class="taint">taint: '
@@ -3843,10 +4018,10 @@ def write_gitlab(findings, out_path):
     the baseline key, `category` is always "sast", `severity` maps
     Loophole's critical/high/medium onto GitLab's Critical/High/
     Medium, and `identifiers` carries the Loophole rule id (with a
-    link to the rule docs; a CWE identifier is added once rules
-    carry CWE ids). `confidence` is High for taint-tracked findings
-    and Medium otherwise. A clean scan emits an empty
-    `vulnerabilities` list with the same `scan` block.
+    link to the rule docs) plus the rule's CWE identifier (with a
+    link to the MITRE CWE page). `confidence` is High for
+    taint-tracked findings and Medium otherwise. A clean scan emits
+    an empty `vulnerabilities` list with the same `scan` block.
     """
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     vulns = [{
@@ -3864,7 +4039,12 @@ def write_gitlab(findings, out_path):
             "name": f"Loophole {f.rule_id}",
             "value": f.rule_id,
             "url": rule_help_uri(f.rule_id),
-        }],
+        }] + ([{
+            "type": "CWE",
+            "name": f.cwe,
+            "value": f.cwe[4:],
+            "url": cwe_help_uri(f.cwe),
+        }] if f.cwe else []),
         "location": {"file": f.path, "start_line": f.line,
                      "end_line": f.line},
     } for f in findings]
@@ -4065,7 +4245,7 @@ def main(argv=None):
 
     if args.command == "scan" and args.rules:
         for rid, langs, _fn in RULES:
-            print(f"{rid:10} {','.join(langs)}")
+            print(f"{rid:10} {rule_cwe(rid):10} {','.join(langs)}")
         print(f"\n{len(RULES)} rules total.")
         return 0
 
